@@ -443,11 +443,17 @@ class TuoitreCrawler:
         meta = soup.find("meta", attrs={"name": "news_keywords"})
         if meta and meta.get("content"):
             tags.extend(re.split(r"[;,]", meta["content"]))
-        tag_links = soup.select("a[rel='tag'], .tags a, .tag a")
-        for link in tag_links:
-            text = link.get_text(strip=True)
-            if text:
-                tags.append(text)
+        tag_selectors = [
+            "a[rel='tag']",
+            ".tags a",
+            ".tag a",
+            ".detail-tab a.item",
+        ]
+        for selector in tag_selectors:
+            for link in soup.select(selector):
+                text = link.get_text(strip=True)
+                if text:
+                    tags.append(text)
 
         cleaned_tags: List[str] = []
         seen = set()
