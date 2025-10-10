@@ -14,9 +14,12 @@ import logging
 import re
 import time
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, Union
+from urllib.parse import urlparse
+from uuid import UUID
 
 import requests
 from bs4 import BeautifulSoup
@@ -71,12 +74,20 @@ class TuoitreCrawler:
 
     BASE_SITEMAP_URL = "https://tuoitre.vn/StaticSitemaps/sitemaps-{year:04d}-{month}.xml"
     SITEMAP_NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    DEFAULT_IMAGE_DIR = "/data/baoanh_crawler/tuoitre/images/"
+    _REQUEST_HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
+        )
+    }
 
     def __init__(
         self,
         session: Optional[requests.Session] = None,
         delay_seconds: float = 0.2,
         request_timeout: int = 30,
+        image_dir: Optional[str] = DEFAULT_IMAGE_DIR,
     ) -> None:
         """
         Parameters
@@ -93,6 +104,9 @@ class TuoitreCrawler:
         self.session = session or requests.Session()
         self.delay_seconds = delay_seconds
         self.request_timeout = request_timeout
+        self.image_dir: Optional[Path] = Path(image_dir).expanduser() if image_dir else None
+        if self.image_dir:
+            self.image_dir.mkdir(parents=True, exist_ok=True)
 
     # --------------------------------------------------------------------- #
     # Public API
@@ -182,16 +196,18 @@ class TuoitreCrawler:
         """
 
         try:
-            from .models import Article, ArticleImage, ArticleVideo  # pylint: disable=cyclic-import
+            from .models import Article, ArticleImage, ArticleVideo, generate_uuid7  # pylint: disable=cyclic-import
         except ImportError:  # pragma: no cover
-            from models import Article, ArticleImage, ArticleVideo  # type: ignore
+            from models import Article, ArticleImage, ArticleVideo, generate_uuid7  # type: ignore
 
         existing = session.query(Article).filter(Article.url == article_data.url).first()
         if existing:
             LOGGER.debug("Article already exists, skipping %s", article_data.url)
             return existing, False
 
+        article_id = generate_uuid7()
         article = Article(
+            id=article_id,
             title=article_data.title,
             description=article_data.description,
             content=article_data.content,
@@ -203,9 +219,10 @@ class TuoitreCrawler:
             publish_date=article_data.publish_date,
         )
 
-        for media in article_data.images:
+        stored_images = self._prepare_article_images(article_id, article_data.images)
+        for image_path, sequence_number in stored_images:
             article.images.append(
-                ArticleImage(image_path=media.url, sequence_number=media.sequence_number)
+                ArticleImage(image_path=image_path, sequence_number=sequence_number)
             )
         for media in article_data.videos:
             article.videos.append(
@@ -216,6 +233,90 @@ class TuoitreCrawler:
         if commit:
             session.commit()
         return article, True
+
+    def _prepare_article_images(
+        self,
+        article_id: UUID,
+        images: Sequence[ArticleMedia],
+    ) -> List[Tuple[str, int]]:
+        if not images:
+            return []
+
+        if not self.image_dir:
+            return [(media.url, index + 1) for index, media in enumerate(images)]
+
+        prepared: List[Tuple[str, int]] = []
+        for media in images:
+            sequence_number = len(prepared) + 1
+            local_path = self._download_single_image(article_id, media, sequence_number)
+            if local_path:
+                prepared.append((local_path, sequence_number))
+            else:
+                LOGGER.warning("Image skipped due to download failure: %s", media.url)
+        return prepared
+
+    def _download_single_image(
+        self,
+        article_id: UUID,
+        media: ArticleMedia,
+        sequence_number: int,
+    ) -> Optional[str]:
+        if not self.image_dir:
+            return media.url
+
+        try:
+            response = self._get(media.url, stream=True)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            LOGGER.warning("Failed to download image %s: %s", media.url, exc)
+            return None
+
+        content_type = response.headers.get("Content-Type")
+        extension = self._select_image_extension(media.url, content_type)
+        filename = f"{article_id}_img_{sequence_number}{extension}"
+        destination = self.image_dir / filename
+        temp_destination = destination.with_suffix(destination.suffix + ".tmp")
+
+        try:
+            with temp_destination.open("wb") as file:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        file.write(chunk)
+            temp_destination.replace(destination)
+        except OSError as exc:
+            LOGGER.warning("Unable to write image %s to %s: %s", media.url, destination, exc)
+            try:
+                temp_destination.unlink()
+            except FileNotFoundError:
+                pass
+            return None
+        finally:
+            response.close()
+
+        return str(destination)
+
+    @staticmethod
+    def _select_image_extension(url: str, content_type: Optional[str]) -> str:
+        valid_extensions = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+        parsed_path = urlparse(url).path
+        url_extension = re.sub(r";.*$", "", Path(parsed_path).suffix).lower()
+        if url_extension in valid_extensions:
+            return url_extension
+
+        if content_type:
+            mime = content_type.split(";", 1)[0].strip().lower()
+            mapping = {
+                "image/jpeg": ".jpg",
+                "image/jpg": ".jpg",
+                "image/png": ".png",
+                "image/gif": ".gif",
+                "image/webp": ".webp",
+                "image/bmp": ".bmp",
+            }
+            if mime in mapping:
+                return mapping[mime]
+
+        return ".jpg"
 
     # --------------------------------------------------------------------- #
     # Sitemap utilities
@@ -281,15 +382,14 @@ class TuoitreCrawler:
     # --------------------------------------------------------------------- #
     # HTTP utilities
     # --------------------------------------------------------------------- #
-    def _get(self, url: str) -> Response:
+    def _get(self, url: str, *, stream: bool = False) -> Response:
         LOGGER.debug("GET %s", url)
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
-            )
-        }
-        return self.session.get(url, headers=headers, timeout=self.request_timeout)
+        return self.session.get(
+            url,
+            headers=self._REQUEST_HEADERS,
+            timeout=self.request_timeout,
+            stream=stream,
+        )
 
     # --------------------------------------------------------------------- #
     # Extraction helpers

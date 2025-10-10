@@ -90,6 +90,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Do not persist data, only print article URLs as they are crawled.",
     )
+    parser.add_argument(
+        "--image-dir",
+        default=TuoitreCrawler.DEFAULT_IMAGE_DIR,
+        help="Directory where downloaded article images are stored.",
+    )
     return parser.parse_args(argv)
 
 
@@ -109,7 +114,11 @@ def main(argv: Optional[list[str]] = None) -> None:
     args = parse_args(argv)
     configure_logging(args.log_level)
 
-    crawler = TuoitreCrawler(delay_seconds=args.delay, request_timeout=args.timeout)
+    crawler = TuoitreCrawler(
+        delay_seconds=args.delay,
+        request_timeout=args.timeout,
+        image_dir=args.image_dir,
+    )
     processed = 0
 
     if (args.start_year, args.start_month) > (args.end_year, args.end_month):
