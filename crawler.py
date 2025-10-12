@@ -137,37 +137,14 @@ class TuoitreCrawler:
             Structured representation for each crawled article.
         """
 
-        for year, month in self._iter_months(start_year, start_month, end_year, end_month):
-            sitemap_url = self.BASE_SITEMAP_URL.format(year=year, month=month)
-            try:
-                entries = self._fetch_sitemap_entries(sitemap_url)
-            except Exception as exc:  # pylint: disable=broad-except
-                LOGGER.warning("Failed to fetch sitemap %s: %s", sitemap_url, exc)
-                continue
-
-            LOGGER.info("Found %d urls in sitemap %s", len(entries), sitemap_url)
-            processed = 0
-            for loc_url in entries:
-                try:
-                    article_data = self._fetch_article(loc_url)
-                except Exception as exc:  # pylint: disable=broad-except
-                    LOGGER.warning("Failed to process article %s: %s", loc_url, exc)
-                    continue
-
-                if article_data:
-                    yield article_data
-                processed += 1
-                if limit_per_month is not None and processed >= limit_per_month:
-                    LOGGER.info(
-                        "Reached monthly limit (%s) for %04d-%02d",
-                        limit_per_month,
-                        year,
-                        month,
-                    )
-                    break
-
-                if self.delay_seconds:
-                    time.sleep(self.delay_seconds)
+        urls = self.iter_article_urls(
+            start_year=start_year,
+            start_month=start_month,
+            end_year=end_year,
+            end_month=end_month,
+            limit_per_month=limit_per_month,
+        )
+        yield from self.crawl_urls(urls)
 
     def persist_article(
         self,
@@ -565,6 +542,53 @@ class TuoitreCrawler:
                 cleaned_tags.append(normalized)
                 seen.add(lowered)
         return cleaned_tags
+
+    def iter_article_urls(
+        self,
+        start_year: int = 2010,
+        start_month: int = 1,
+        end_year: int = 2015,
+        end_month: int = 10,
+        limit_per_month: Optional[int] = None,
+    ) -> Iterator[str]:
+        for year, month in self._iter_months(start_year, start_month, end_year, end_month):
+            sitemap_url = self.BASE_SITEMAP_URL.format(year=year, month=month)
+            try:
+                entries = self._fetch_sitemap_entries(sitemap_url)
+            except Exception as exc:  # pylint: disable=broad-except
+                LOGGER.warning("Failed to fetch sitemap %s: %s", sitemap_url, exc)
+                continue
+
+            LOGGER.info("Found %d urls in sitemap %s", len(entries), sitemap_url)
+            processed = 0
+            for loc_url in entries:
+                yield loc_url
+                processed += 1
+                if limit_per_month is not None and processed >= limit_per_month:
+                    LOGGER.info(
+                        "Reached monthly limit (%s) for %04d-%02d",
+                        limit_per_month,
+                        year,
+                        month,
+                    )
+                    break
+
+    def crawl_urls(self, urls: Iterable[str]) -> Iterator[ArticleData]:
+        for url in urls:
+            url = url.strip()
+            if not url:
+                continue
+            try:
+                article_data = self._fetch_article(url)
+            except Exception as exc:  # pylint: disable=broad-except
+                LOGGER.warning("Failed to process article %s: %s", url, exc)
+                continue
+
+            if article_data:
+                yield article_data
+
+            if self.delay_seconds:
+                time.sleep(self.delay_seconds)
 
     def _collect_comments(self, article_url: str, soup: BeautifulSoup) -> Dict[str, Union[int, Sequence[Dict[str, Optional[str]]]]]:
         api_comments = self._fetch_comments_via_api(article_url, soup)

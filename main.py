@@ -10,7 +10,8 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-from typing import Optional
+from pathlib import Path
+from typing import Iterator, Optional
 
 from sqlalchemy import create_engine
 from sqlalchemy.exc import SQLAlchemyError
@@ -27,6 +28,7 @@ DEFAULT_DB_URL = os.environ.get(
     "TUOITRE_DB_URL",
     "postgresql://crawler:password123@localhost:5432/tuoitre_news",
 )
+URLS_FILENAME = "urls.txt"
 
 
 def _positive_int(value: str) -> int:
@@ -133,13 +135,13 @@ def main(argv: Optional[list[str]] = None) -> None:
         raise SystemExit(1)
 
     if args.dry_run:
-        for article in crawler.crawl(
-            start_year=args.start_year,
-            start_month=args.start_month,
-            end_year=args.end_year,
-            end_month=args.end_month,
-            limit_per_month=args.limit_per_month,
-        ):
+        urls_path = Path(URLS_FILENAME)
+        total_urls = _collect_urls(crawler, args, urls_path)
+        if not total_urls:
+            logging.info("Dry run completed: no URLs discovered.")
+            return
+
+        for article in crawler.crawl_urls(_iter_urls_from_file(urls_path)):
             logging.info("Would persist article: %s", article.url)
             processed += 1
             if args.max_articles and processed >= args.max_articles:
@@ -163,6 +165,37 @@ def main(argv: Optional[list[str]] = None) -> None:
         raise SystemExit(1) from exc
 
 
+def _collect_urls(
+    crawler: TuoitreCrawler,
+    args: argparse.Namespace,
+    output_path: Path,
+) -> int:
+    count = 0
+    output_path = output_path.resolve()
+    logging.info("Collecting article URLs into %s", output_path)
+    with output_path.open("w", encoding="utf-8") as handle:
+        for url in crawler.iter_article_urls(
+            start_year=args.start_year,
+            start_month=args.start_month,
+            end_year=args.end_year,
+            end_month=args.end_month,
+            limit_per_month=args.limit_per_month,
+        ):
+            handle.write(f"{url}\n")
+            count += 1
+            if args.max_articles and count >= args.max_articles:
+                break
+    return count
+
+
+def _iter_urls_from_file(path: Path) -> Iterator[str]:
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            url = line.strip()
+            if url:
+                yield url
+
+
 def _crawl_and_store(
     crawler: TuoitreCrawler,
     session: Session,
@@ -177,14 +210,16 @@ def _crawl_and_store(
     )
     persisted = 0
     errors = 0
+    urls_path = Path(URLS_FILENAME)
 
-    for article in crawler.crawl(
-        start_year=args.start_year,
-        start_month=args.start_month,
-        end_year=args.end_year,
-        end_month=args.end_month,
-        limit_per_month=args.limit_per_month,
-    ):
+    total_urls = _collect_urls(crawler, args, urls_path)
+    if not total_urls:
+        logging.info("No article URLs found for the provided period.")
+        return
+
+    logging.info("Saved %d URLs to %s", total_urls, urls_path)
+
+    for article in crawler.crawl_urls(_iter_urls_from_file(urls_path)):
         try:
             _, created = crawler.persist_article(session, article, commit=False)
             if created:
