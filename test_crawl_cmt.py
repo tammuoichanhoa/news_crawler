@@ -15,8 +15,14 @@ async def fetch_comments_with_playwright(article_url: str):
         browser = await pw.chromium.launch(headless=True)
         page = await browser.new_page()
         await page.goto(article_url, timeout=60000)
-        # wait for comment list to render
-        await page.wait_for_selector("li.item-comment", timeout=20000)
+        try:
+            # wait for comment container to exist; comments might be empty
+            await page.wait_for_selector("section.comment-wrapper", timeout=20000)
+            await page.wait_for_timeout(1500)
+        except Exception:
+            print("⚠️ Comment container missing; returning empty list.")
+            await browser.close()
+            return []
         html = await page.content()
         await browser.close()
 
@@ -113,6 +119,8 @@ if __name__ == "__main__":
     url = "https://tuoitre.vn/4-kich-ban-cua-cuoc-dung-do-kinh-te-my-trung-20251011234722858.htm"
     comments = crawl_tuoitre_comments(url)
     print("\n=== Final results ===")
+    res = []
     for c in comments:
-        print(c)
+        res.append(c)
+    print(res)
     print(f"\nTotal comments: {len(comments)}")

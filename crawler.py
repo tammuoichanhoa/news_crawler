@@ -9,24 +9,63 @@ the result via SQLAlchemy.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 import time
 import xml.etree.ElementTree as ET
-from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, Union
 from urllib.parse import urlparse
 from uuid import UUID
 
 import requests
 from bs4 import BeautifulSoup
+from playwright.async_api import async_playwright
 from requests import Response
 
 LOGGER = logging.getLogger(__name__)
 
+async def fetch_comments_with_playwright(article_url: str):
+    """
+    Fallback: render the full page with Playwright when the AJAX API is blocked.
+    """
+    LOGGER.info("Falling back to Playwright rendering for %s", article_url)
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto(article_url, timeout=60000)
+        try:
+            # wait for comment container to exist; comments might be empty
+            await page.wait_for_selector("section.comment-wrapper", timeout=20000)
+            await page.wait_for_timeout(1500)
+        except Exception:
+            LOGGER.info("Comment container missing after rendering %s; returning empty list.", article_url)
+            await browser.close()
+            return []
+        html = await page.content()
+        await browser.close()
+
+    soup = BeautifulSoup(html, "html.parser")
+    comment_items = soup.select("li.item-comment")
+    comments = []
+    for el in comment_items:
+        comments.append({
+            "username": el.select_one(".name") and el.select_one(".name").get_text(strip=True),
+            "content": el.select_one(".contentcomment") and el.select_one(".contentcomment").get_text(" ", strip=True),
+            "time": el.select_one(".timeago") and (
+                el.select_one(".timeago").get("title") or el.select_one(".timeago").get_text(strip=True)
+            ),
+            "comment_id": el.get("data-cmid"),
+            "parent_id": el.get("data-parentid"),
+        })
+
+    LOGGER.info("Extracted %d comments via Playwright fallback for %s", len(comments), article_url)
+    return comments
 
 @dataclass
 class ArticleMedia:
@@ -75,6 +114,7 @@ class TuoitreCrawler:
     BASE_SITEMAP_URL = "https://tuoitre.vn/StaticSitemaps/sitemaps-{year:04d}-{month}.xml"
     SITEMAP_NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     DEFAULT_IMAGE_DIR = "/data/baoanh_crawler/tuoitre/images/"
+    COMMENTS_PAGE_SIZE = 50
     _REQUEST_HEADERS = {
         "User-Agent": (
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -180,6 +220,13 @@ class TuoitreCrawler:
         existing = session.query(Article).filter(Article.url == article_data.url).first()
         if existing:
             LOGGER.debug("Article already exists, skipping %s", article_data.url)
+            new_comments = article_data.comments or {"count": 0, "list": []}
+            stored_comments = existing.comments or {"count": 0, "list": []}
+            if new_comments != stored_comments:
+                existing.comments = new_comments
+                session.add(existing)
+                if commit:
+                    session.commit()
             return existing, False
 
         article_id = generate_uuid7()
@@ -238,18 +285,19 @@ class TuoitreCrawler:
         media: ArticleMedia,
         sequence_number: int,
     ) -> Optional[str]:
+        normalized_url = self._normalize_asset_url(media.url)
         if not self.image_dir:
-            return media.url
+            return normalized_url
 
         try:
-            response = self._get(media.url, stream=True)
+            response = self._get(normalized_url, stream=True)
             response.raise_for_status()
         except requests.RequestException as exc:
             LOGGER.warning("Failed to download image %s: %s", media.url, exc)
             return None
 
         content_type = response.headers.get("Content-Type")
-        extension = self._select_image_extension(media.url, content_type)
+        extension = self._select_image_extension(normalized_url, content_type)
         filename = f"{article_id}_img_{sequence_number}{extension}"
         destination = self.image_dir / filename
         temp_destination = destination.with_suffix(destination.suffix + ".tmp")
@@ -361,9 +409,10 @@ class TuoitreCrawler:
     # HTTP utilities
     # --------------------------------------------------------------------- #
     def _get(self, url: str, *, stream: bool = False) -> Response:
-        LOGGER.debug("GET %s", url)
+        normalized_url = self._ensure_scheme(url)
+        LOGGER.debug("GET %s", normalized_url)
         return self.session.get(
-            url,
+            normalized_url,
             headers=self._REQUEST_HEADERS,
             timeout=self.request_timeout,
             stream=stream,
@@ -593,9 +642,14 @@ class TuoitreCrawler:
     def _collect_comments(self, article_url: str, soup: BeautifulSoup) -> Dict[str, Union[int, Sequence[Dict[str, Optional[str]]]]]:
         api_comments = self._fetch_comments_via_api(article_url, soup)
         if api_comments:
+            LOGGER.debug("Extracted %d comments via API for %s", len(api_comments), article_url)
             return {"count": len(api_comments), "list": api_comments}
 
-        fallback_comments = self._extract_comments_from_dom(soup)
+
+        # fallback_comments = self._extract_comments_from_dom(soup)
+        fallback_comments = asyncio.run(fetch_comments_with_playwright(article_url))
+        print("fallback_comments", fallback_comments)
+        LOGGER.debug("Fallback extracted %d comments from rendered DOM for %s", len(fallback_comments), article_url)
         return {"count": len(fallback_comments), "list": fallback_comments}
 
     def _fetch_comments_via_api(
@@ -613,7 +667,6 @@ class TuoitreCrawler:
             return []
 
         object_type = comment_section.get("data-objecttype") or "1"
-        page = 1
         collected: List[Dict[str, Optional[str]]] = []
         seen_ids: set[str] = set()
 
@@ -626,26 +679,17 @@ class TuoitreCrawler:
             }
         )
 
+        page_size = self.COMMENTS_PAGE_SIZE
+        page = 1
+
         while page <= max_pages:
-            api_url = (
-                "https://tuoitre.vn/ajax/comment-list.htm"
-                f"?objectid={object_id}&objecttype={object_type}&sort=1&page={page}"
+            payload = self._request_comment_page(
+                object_id=object_id,
+                object_type=object_type,
+                headers=headers,
+                page=page,
+                page_size=page_size,
             )
-            try:
-                response = self.session.get(
-                    api_url,
-                    headers=headers,
-                    timeout=self.request_timeout,
-                )
-            except requests.RequestException as exc:
-                LOGGER.debug("Failed to fetch comments page %s: %s", api_url, exc)
-                break
-
-            if response.status_code != 200:
-                LOGGER.debug("Unexpected status %s while fetching comments", response.status_code)
-                break
-
-            payload = response.text.strip()
             if not payload:
                 break
 
@@ -666,12 +710,45 @@ class TuoitreCrawler:
 
         return collected
 
-    @staticmethod
-    def _extract_comments_from_dom(soup: BeautifulSoup) -> List[Dict[str, Optional[str]]]:
-        items = soup.select("li.item-comment")
-        if not items:
-            return []
-        return TuoitreCrawler._parse_comment_elements(items)
+    def _request_comment_page(
+        self,
+        object_id: str,
+        object_type: str,
+        headers: Dict[str, str],
+        page: int,
+        page_size: int,
+    ) -> Optional[str]:
+        api_url = (
+            "https://tuoitre.vn/ajax/comment-list.htm"
+            f"?objectid={object_id}&objecttype={object_type}&sort=1&page={page}&pageSize={page_size}"
+        )
+        try:
+            response = self.session.get(
+                api_url,
+                headers=headers,
+                timeout=self.request_timeout,
+            )
+        except requests.RequestException as exc:
+            LOGGER.debug("Failed to fetch comments page %s: %s", api_url, exc)
+            return None
+
+        if response.status_code != 200:
+            LOGGER.debug(
+                "Unexpected status %s while fetching comments via %s",
+                response.status_code,
+                api_url,
+            )
+            return None
+
+        payload = response.text.strip()
+        return payload or None
+
+    # @staticmethod
+    # def _extract_comments_from_dom(soup: BeautifulSoup) -> List[Dict[str, Optional[str]]]:
+    #     items = soup.select("li.item-comment")
+    #     if not items:
+    #         return []
+    #     return TuoitreCrawler._parse_comment_elements(items)
 
     @staticmethod
     def _parse_comment_elements(elements: Iterable) -> List[Dict[str, Optional[str]]]:
@@ -724,7 +801,8 @@ class TuoitreCrawler:
             if cleaned and cleaned not in unique:
                 unique.append(cleaned)
 
-        return [ArticleMedia(url=img_url, sequence_number=index + 1) for index, img_url in enumerate(unique)]
+        normalized = [TuoitreCrawler._normalize_asset_url(url) for url in unique]
+        return [ArticleMedia(url=img_url, sequence_number=index + 1) for index, img_url in enumerate(normalized)]
 
     @staticmethod
     def _extract_videos(soup: BeautifulSoup) -> List[ArticleMedia]:
@@ -745,11 +823,36 @@ class TuoitreCrawler:
             cleaned = url.strip()
             if cleaned and cleaned not in unique:
                 unique.append(cleaned)
-        return [ArticleMedia(url=vid_url, sequence_number=index + 1) for index, vid_url in enumerate(unique)]
+        normalized = [TuoitreCrawler._normalize_asset_url(url) for url in unique]
+        return [ArticleMedia(url=vid_url, sequence_number=index + 1) for index, vid_url in enumerate(normalized)]
 
     # --------------------------------------------------------------------- #
     # Generic helpers
     # --------------------------------------------------------------------- #
+    @staticmethod
+    def _normalize_asset_url(url: str) -> str:
+        if not url:
+            return url
+        url = url.strip()
+        if url.startswith("//"):
+            return f"https:{url}"
+        parsed = urlparse(url)
+        if parsed.scheme:
+            return url
+        if url.startswith("/"):
+            return f"https://tuoitre.vn{url}"
+        return f"https://tuoitre.vn/{url.lstrip('/')}"
+
+    def _ensure_scheme(self, url: str) -> str:
+        if not url:
+            return url
+        if url.startswith("//"):
+            return f"https:{url}"
+        parsed = urlparse(url)
+        if parsed.scheme:
+            return url
+        return f"https://{url.lstrip('/')}"
+
     @staticmethod
     def _iter_months(
         start_year: int,

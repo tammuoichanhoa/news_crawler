@@ -97,6 +97,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=TuoitreCrawler.DEFAULT_IMAGE_DIR,
         help="Directory where downloaded article images are stored.",
     )
+    parser.add_argument(
+        "--resume-url",
+        default=None,
+        help="Resume crawling from this article URL (inclusive) using urls.txt ordering.",
+    )
     return parser.parse_args(argv)
 
 
@@ -141,7 +146,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             logging.info("Dry run completed: no URLs discovered.")
             return
 
-        for article in crawler.crawl_urls(_iter_urls_from_file(urls_path)):
+        for article in crawler.crawl_urls(_iter_urls_from_file(urls_path, args.resume_url)):
             logging.info("Would persist article: %s", article.url)
             processed += 1
             if args.max_articles and processed >= args.max_articles:
@@ -188,12 +193,36 @@ def _collect_urls(
     return count
 
 
-def _iter_urls_from_file(path: Path) -> Iterator[str]:
+def _iter_urls_from_file(path: Path, resume_url: Optional[str] = None) -> Iterator[str]:
+    resume_url_normalized = resume_url.strip() if resume_url else None
+    resume_found = resume_url_normalized is None
+
+    if resume_url_normalized:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip() == resume_url_normalized:
+                    resume_found = True
+                    logging.info("Resume point located at URL: %s", resume_url_normalized)
+                    break
+        if not resume_found:
+            logging.warning(
+                "Resume URL '%s' not found in %s. Starting from the beginning.",
+                resume_url_normalized,
+                path,
+            )
+            resume_url_normalized = None
+
     with path.open("r", encoding="utf-8") as handle:
+        resume_reached = resume_url_normalized is None
         for line in handle:
             url = line.strip()
-            if url:
-                yield url
+            if not url:
+                continue
+            if not resume_reached:
+                if url != resume_url_normalized:
+                    continue
+                resume_reached = True
+            yield url
 
 
 def _crawl_and_store(
@@ -219,7 +248,7 @@ def _crawl_and_store(
 
     logging.info("Saved %d URLs to %s", total_urls, urls_path)
 
-    for article in crawler.crawl_urls(_iter_urls_from_file(urls_path)):
+    for article in crawler.crawl_urls(_iter_urls_from_file(urls_path, args.resume_url)):
         try:
             _, created = crawler.persist_article(session, article, commit=False)
             if created:
