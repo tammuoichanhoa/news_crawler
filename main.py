@@ -47,7 +47,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="SQLAlchemy database URL (overrides TUOITRE_DB_URL env when provided).",
     )
     parser.add_argument("--start-year", type=int, default=2025)
-    parser.add_argument("--start-month", type=int, default=1)
+    parser.add_argument("--start-month", type=int, default=10)
     parser.add_argument("--end-year", type=int, default=2015)
     parser.add_argument("--end-month", type=int, default=10)
     parser.add_argument(

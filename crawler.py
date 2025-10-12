@@ -363,6 +363,7 @@ class TuoitreCrawler:
         tags = self._extract_tags(soup, ld_json)
         images = self._extract_images(soup, ld_json)
         videos = self._extract_videos(soup)
+        comments = self._collect_comments(article_url, soup)
 
         article = ArticleData(
             title=title,
@@ -370,7 +371,7 @@ class TuoitreCrawler:
             content=content,
             category_id=category_id,
             category_name=category_name,
-            comments={"count": 0, "list": []},
+            comments=comments,
             tags=tags,
             url=article_url,
             publish_date=publish_date,
@@ -564,6 +565,113 @@ class TuoitreCrawler:
                 cleaned_tags.append(normalized)
                 seen.add(lowered)
         return cleaned_tags
+
+    def _collect_comments(self, article_url: str, soup: BeautifulSoup) -> Dict[str, Union[int, Sequence[Dict[str, Optional[str]]]]]:
+        api_comments = self._fetch_comments_via_api(article_url, soup)
+        if api_comments:
+            return {"count": len(api_comments), "list": api_comments}
+
+        fallback_comments = self._extract_comments_from_dom(soup)
+        return {"count": len(fallback_comments), "list": fallback_comments}
+
+    def _fetch_comments_via_api(
+        self,
+        article_url: str,
+        soup: BeautifulSoup,
+        max_pages: int = 50,
+    ) -> List[Dict[str, Optional[str]]]:
+        comment_section = soup.select_one("section.comment-wrapper[data-objectid]")
+        if not comment_section:
+            return []
+
+        object_id = comment_section.get("data-objectid")
+        if not object_id:
+            return []
+
+        object_type = comment_section.get("data-objecttype") or "1"
+        page = 1
+        collected: List[Dict[str, Optional[str]]] = []
+        seen_ids: set[str] = set()
+
+        headers = dict(self._REQUEST_HEADERS)
+        headers.update(
+            {
+                "Referer": article_url,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "vi,en-US;q=0.9,en;q=0.8",
+            }
+        )
+
+        while page <= max_pages:
+            api_url = (
+                "https://tuoitre.vn/ajax/comment-list.htm"
+                f"?objectid={object_id}&objecttype={object_type}&sort=1&page={page}"
+            )
+            try:
+                response = self.session.get(
+                    api_url,
+                    headers=headers,
+                    timeout=self.request_timeout,
+                )
+            except requests.RequestException as exc:
+                LOGGER.debug("Failed to fetch comments page %s: %s", api_url, exc)
+                break
+
+            if response.status_code != 200:
+                LOGGER.debug("Unexpected status %s while fetching comments", response.status_code)
+                break
+
+            payload = response.text.strip()
+            if not payload:
+                break
+
+            fragment = BeautifulSoup(payload, "html.parser")
+            items = fragment.select("li.item-comment")
+            if not items:
+                break
+
+            for parsed in self._parse_comment_elements(items):
+                comment_id = parsed.get("comment_id")
+                if comment_id and comment_id in seen_ids:
+                    continue
+                if comment_id:
+                    seen_ids.add(comment_id)
+                collected.append(parsed)
+
+            page += 1
+
+        return collected
+
+    @staticmethod
+    def _extract_comments_from_dom(soup: BeautifulSoup) -> List[Dict[str, Optional[str]]]:
+        items = soup.select("li.item-comment")
+        if not items:
+            return []
+        return TuoitreCrawler._parse_comment_elements(items)
+
+    @staticmethod
+    def _parse_comment_elements(elements: Iterable) -> List[Dict[str, Optional[str]]]:
+        comments: List[Dict[str, Optional[str]]] = []
+        for element in elements:
+            username_node = element.select_one(".name")
+            content_node = element.select_one(".contentcomment")
+            time_node = element.select_one(".timeago")
+            timestamp: Optional[str] = None
+            if time_node:
+                timestamp = time_node.get("title") or time_node.get_text(strip=True) or None
+
+            comment_id = element.get("data-cmid") or None
+            parent_id = element.get("data-parentid") or None
+            comments.append(
+                {
+                    "username": username_node.get_text(strip=True) if username_node else None,
+                    "content": content_node.get_text(" ", strip=True) if content_node else None,
+                    "time": timestamp,
+                    "comment_id": comment_id,
+                    "parent_id": parent_id,
+                }
+            )
+        return comments
 
     @staticmethod
     def _extract_images(soup: BeautifulSoup, ld_json: Optional[Dict]) -> List[ArticleMedia]:
