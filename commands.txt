@@ -1,0 +1,13 @@
+Usage flow:
+
+First run: 
+python main.py --sitemaps-file sitemaps.txt (collect URLs + crawl if desired).
+
+Subsequent runs: 
+python main.py --skip-url-collection --max-total-urls 20 (only ingest the next queued URLs, then stop).
+
+
+Suggested checks:
+
+python inspect_data.py --host baohaiphong.vn --limit 3 --show-content 300
+python quality_check.py --host baohaiphong.vn --content-threshold 400 --show-samples 5
