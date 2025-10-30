@@ -1,14 +1,16 @@
 import gzip
 import io
 import logging
-from fnmatch import fnmatch
 import random
 import time
+import xml.etree.ElementTree as ET
+from fnmatch import fnmatch
 from typing import Iterable, List, Sequence, Set
 from urllib.parse import urlparse
-import xml.etree.ElementTree as ET
 
 import requests
+
+from .throttle import RequestThrottler
 
 
 logger = logging.getLogger(__name__)
@@ -23,6 +25,8 @@ class SitemapCrawler:
         timeout: int = 20,
         allowed_extensions: Iterable[str] | None = None,
         include_patterns: Sequence[str] | None = None,
+        user_agent: str | None = None,
+        throttler: RequestThrottler | None = None,
     ) -> None:
         self.session = session or requests.Session()
         self.timeout = timeout
@@ -32,6 +36,10 @@ class SitemapCrawler:
             else None
         )
         self.include_patterns = list(include_patterns) if include_patterns else None
+        self.throttler = throttler
+
+        if user_agent:
+            self.session.headers["User-Agent"] = user_agent
 
     def fetch_urls(self, sitemap_url: str) -> List[str]:
         """Fetch sitemap (or sitemap index) and return article URLs."""
@@ -112,6 +120,8 @@ class SitemapCrawler:
         last_exc: Exception | None = None
         while attempt < max_attempts:
             try:
+                if self.throttler:
+                    self.throttler.wait()
                 response = self.session.get(url, timeout=self.timeout)
                 response.raise_for_status()
                 return response

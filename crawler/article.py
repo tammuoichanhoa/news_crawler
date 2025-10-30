@@ -1,15 +1,18 @@
 import json
 import logging
+import re
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urljoin
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from dateutil import parser as date_parser
 
 from db.models import Article, ArticleImage, ArticleVideo
+from .throttle import RequestThrottler
 
 
 logger = logging.getLogger(__name__)
@@ -75,39 +78,77 @@ class ArticleExtractor:
     def _extract_content(self, soup: BeautifulSoup) -> str | None:
         container = self._find_main_container(soup)
         if container is None:
-            paragraphs = soup.find_all("p")
+            paragraphs = [
+                p
+                for p in soup.find_all("p")
+                if not _contains_excluded_text(p) and not _is_in_excluded_section(p)
+            ]
             if paragraphs:
                 return _join_paragraphs(paragraphs)
             return None
 
-        allowed_paragraphs = []
-        for element in container.descendants:
-            if element.name in {"script", "style", "noscript"}:
-                continue
-            if hasattr(element, "get"):
-                element["class"] = element.get("class", [])
+        collected_texts: List[str] = []
+        last_text: str | None = None
+        queue: deque[Tag] = deque([container])
 
-            if element.name == "p":
-                if not _contains_excluded_text(element):
-                    allowed_paragraphs.append(element)
-            elif element.name in {"h2", "h3", "li"}:
-                allowed_paragraphs.append(element)
+        while queue:
+            current = queue.popleft()
+            for child in current.children:
+                if not isinstance(child, Tag):
+                    continue
+                if child.name in {"script", "style", "noscript", "iframe", "form"}:
+                    continue
+                if child.name in {"nav", "aside", "footer"}:
+                    continue
+                if _is_in_excluded_section(child):
+                    continue
 
-        if not allowed_paragraphs:
+                if child.name in {"p", "h2", "h3", "h4", "li"}:
+                    text = child.get_text(" ", strip=True)
+                    text = _normalize_whitespace(text)
+                    if not text:
+                        continue
+                    if _contains_excluded_text(text):
+                        continue
+                    if text == last_text:
+                        continue
+                    collected_texts.append(text)
+                    last_text = text
+                elif child.name == "table":
+                    table_text = _table_to_text(child)
+                    if not table_text or table_text == last_text:
+                        continue
+                    collected_texts.append(table_text)
+                    last_text = table_text
+                else:
+                    queue.append(child)
+
+        if not collected_texts:
             return None
-        return _join_paragraphs(allowed_paragraphs)
+        return "\n\n".join(collected_texts)
 
     def _find_main_container(self, soup: BeautifulSoup):
         selectors = [
+            "[itemprop='articleBody']",
             "article",
-            "div[class*='article'], div[id*='article']",
+            "section[itemtype*='Article']",
+            "div[class*='article-body']",
+            "section[class*='article-body']",
+            "div[class*='entry']",
             "div[class*='content'], section[class*='content']",
         ]
+
+        best_element: Tag | None = None
+        best_length = 0
         for selector in selectors:
-            element = soup.select_one(selector)
-            if element:
-                return element
-        return None
+            for element in soup.select(selector):
+                if _is_in_excluded_section(element):
+                    continue
+                text_length = len(element.get_text(" ", strip=True))
+                if text_length > best_length:
+                    best_length = text_length
+                    best_element = element
+        return best_element
 
     def _extract_category(self, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
         category_meta = soup.select_one("meta[property='article:section'], meta[name='article:section']")
@@ -244,15 +285,29 @@ class ArticleExtractor:
 class ArticleCrawler:
     """Fetch article pages and persist them into the database."""
 
-    def __init__(self, session_factory, timeout: int = 20, max_images: int = 10, max_videos: int = 5) -> None:
+    def __init__(
+        self,
+        session_factory,
+        timeout: int = 20,
+        max_images: int = 10,
+        max_videos: int = 5,
+        user_agent: str | None = None,
+        throttler: RequestThrottler | None = None,
+    ) -> None:
         self.session_factory = session_factory
         self.timeout = timeout
         self.http = requests.Session()
         self.max_images = max_images
         self.max_videos = max_videos
+        self.throttler = throttler
+
+        if user_agent:
+            self.http.headers["User-Agent"] = user_agent
 
     def crawl(self, url: str) -> bool:
         try:
+            if self.throttler:
+                self.throttler.wait()
             response = self.http.get(url, timeout=self.timeout)
             response.raise_for_status()
         except Exception as exc:
@@ -362,8 +417,12 @@ def _deduplicate_preserve_order(items: Sequence[str]) -> List[str]:
     return result
 
 
-def _contains_excluded_text(element) -> bool:
-    text = element.get_text(" ", strip=True).lower()
+def _contains_excluded_text(element_or_text) -> bool:
+    if isinstance(element_or_text, Tag):
+        text = element_or_text.get_text(" ", strip=True)
+    else:
+        text = str(element_or_text)
+    lowered = text.lower()
     excluded_keywords = [
         "chia sẻ facebook",
         "theo dõi trên",
@@ -371,8 +430,87 @@ def _contains_excluded_text(element) -> bool:
         "ban biên tập",
         "thời gian",
         "số người thích",
+        "sponsored",
+        "quảng cáo",
     ]
-    return any(keyword in text for keyword in excluded_keywords)
+    return any(keyword in lowered for keyword in excluded_keywords)
+
+
+def _normalize_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _table_to_text(table: Tag) -> str | None:
+    rows: List[str] = []
+    for tr in table.find_all("tr"):
+        cells = []
+        for cell in tr.find_all(["th", "td"]):
+            cell_text = _normalize_whitespace(cell.get_text(" ", strip=True))
+            if cell_text:
+                cells.append(cell_text)
+        if cells:
+            rows.append(" | ".join(cells))
+    if not rows:
+        return None
+    return "\n".join(rows)
+
+
+def _tokenize_identifier(value: str) -> List[str]:
+    return re.findall(r"[a-z0-9]+", value.lower())
+
+
+_EXCLUDED_SECTION_TOKENS = {
+    "ads",
+    "advert",
+    "banner",
+    "sponsor",
+    "related",
+    "share",
+    "social",
+    "comment",
+    "promo",
+    "widget",
+    "tags",
+    "tagbox",
+    "taglist",
+    "keyword",
+    "subscribe",
+    "breadcrumb",
+}
+
+
+def _has_excluded_marker(element: Tag) -> bool:
+    attribute_names = [
+        "class",
+        "id",
+        "data-role",
+        "data-component",
+        "data-block",
+        "data-type",
+    ]
+    for attr_name in attribute_names:
+        attr_value = element.get(attr_name)
+        if not attr_value:
+            continue
+        values = attr_value if isinstance(attr_value, list) else [attr_value]
+        for value in values:
+            tokens = _tokenize_identifier(value)
+            if any(
+                token == keyword or token.startswith(keyword)
+                for token in tokens
+                for keyword in _EXCLUDED_SECTION_TOKENS
+            ):
+                return True
+    return False
+
+
+def _is_in_excluded_section(element: Tag) -> bool:
+    current = element
+    while isinstance(current, Tag):
+        if _has_excluded_marker(current):
+            return True
+        current = current.parent
+    return False
 
 
 def _extract_date_from_jsonld(soup: BeautifulSoup) -> Optional[datetime]:

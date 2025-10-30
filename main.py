@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 
 from crawler.pipeline import CrawlPipeline
+from crawler.throttle import RequestThrottler
 from db.session import create_session_factory
 
 
@@ -38,7 +39,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--allowed-extension",
         action="append",
-        default='.html',
         help="Restrict collected URLs to the given file extensions (e.g. --allowed-extension .html).",
     )
     parser.add_argument(
@@ -46,6 +46,7 @@ def parse_args() -> argparse.Namespace:
         action="append",
         help="Only follow child sitemaps whose URL matches these glob patterns (e.g. --sitemap-include '*sitemap-article*').",
     )
+    parser.add_argument("--user-agent", help="Override the HTTP User-Agent header for outbound requests.")
     parser.add_argument(
         "--direct-crawl",
         action="store_true",
@@ -71,6 +72,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-url-collection", action="store_true", help="Skip sitemap fetching and reuse cached URLs.")
     parser.add_argument("--skip-article-ingest", action="store_true", help="Skip article crawling stage.")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging.")
+    parser.add_argument(
+        "--min-request-delay",
+        type=float,
+        default=0.0,
+        help="Minimum delay (seconds) to wait between HTTP requests.",
+    )
+    parser.add_argument(
+        "--max-request-delay",
+        type=float,
+        default=None,
+        help="Maximum delay (seconds) to wait between HTTP requests. Defaults to the minimum delay if omitted.",
+    )
 
     return parser.parse_args()
 
@@ -79,12 +92,25 @@ def main() -> None:
     args = parse_args()
     configure_logging(args.verbose)
 
+    if args.max_request_delay is not None and args.max_request_delay < args.min_request_delay:
+        raise SystemExit("--max-request-delay must be greater than or equal to --min-request-delay")
+
+    allowed_extensions = args.allowed_extension or [".html"]
+    throttler: RequestThrottler | None = None
+    if args.min_request_delay > 0 or (args.max_request_delay is not None and args.max_request_delay > 0):
+        throttler = RequestThrottler(
+            min_delay=args.min_request_delay,
+            max_delay=args.max_request_delay,
+        )
+
     session_factory = create_session_factory(database_url=args.database_url)
     pipeline = CrawlPipeline(
         stored_urls_dir=Path(args.stored_urls_dir),
         session_factory=session_factory,
-        allowed_extensions=args.allowed_extension,
+        allowed_extensions=allowed_extensions,
         sitemap_include_patterns=args.sitemap_include,
+        request_throttler=throttler,
+        user_agent=args.user_agent,
     )
 
     sitemap_urls: list[str] | None = None

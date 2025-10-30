@@ -8,6 +8,7 @@ from .sitemap import SitemapCrawler
 from .storage import UrlStore
 from .utils import slugify_host
 from .article import ArticleCrawler
+from .throttle import RequestThrottler
 
 
 logger = logging.getLogger(__name__)
@@ -22,13 +23,21 @@ class CrawlPipeline:
         session_factory: sessionmaker,
         allowed_extensions: Sequence[str] | None = None,
         sitemap_include_patterns: Sequence[str] | None = None,
+        request_throttler: RequestThrottler | None = None,
+        user_agent: str | None = None,
     ) -> None:
         self.url_store = UrlStore(stored_urls_dir)
         self.sitemap_crawler = SitemapCrawler(
             allowed_extensions=allowed_extensions,
             include_patterns=sitemap_include_patterns,
+            user_agent=user_agent,
+            throttler=request_throttler,
         )
-        self.article_crawler = ArticleCrawler(session_factory=session_factory)
+        self.article_crawler = ArticleCrawler(
+            session_factory=session_factory,
+            user_agent=user_agent,
+            throttler=request_throttler,
+        )
 
     def _fetch_sitemap_urls(
         self,
