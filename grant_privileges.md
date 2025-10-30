@@ -6,7 +6,7 @@ ALTER DATABASE vietnamese_news_db OWNER TO crawl;
 
 -- Gán quyền cho schema public
 GRANT ALL PRIVILEGES ON SCHEMA public TO crawl;
-ALTER SCHEMA public OWNER TO crcrawlawl;
+ALTER SCHEMA public OWNER TO crawl;
 
 -- Gán quyền cho tất cả bảng hiện có
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO crawl;

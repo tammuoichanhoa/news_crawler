@@ -25,7 +25,7 @@ class Article(Base):
     category_id = Column(String(100), index=True)
     category_name = Column(String(200), index=True)
     comments = Column(JSONB)
-    tags = Column(String(500), index=True)
+    tags = Column(String(5000), index=True)
     url = Column(String(2000), unique=True, nullable=False)
     publish_date = Column(DateTime, index=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
@@ -54,7 +54,7 @@ class ArticleImage(Base):
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=generate_uuid7)
     article_id = Column(UUID(as_uuid=True), ForeignKey('articles.id', ondelete='CASCADE'), nullable=False)
-    image_path = Column(String(500), nullable=False)
+    image_path = Column(String(4096), nullable=False)
     sequence_number = Column(Integer, nullable=False)
     created_at = Column(DateTime, default=func.now(), nullable=False)
     

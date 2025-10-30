@@ -1,11 +1,13 @@
 import json
 import logging
+import posixpath
 import re
+import unicodedata
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Iterable, List, Optional, Sequence, Tuple
-from urllib.parse import urljoin
+from typing import Callable, Iterable, List, Optional, Sequence, Tuple
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup, Tag
@@ -43,16 +45,24 @@ class ArticleExtractor:
         data = ArticleData(url=self.base_url)
         data.title = self._extract_title(soup)
         data.description = self._extract_description(soup)
-        data.content = self._extract_content(soup)
+
+        main_container = self._find_main_container(soup)
+
+        data.content = self._extract_content(soup, main_container)
         data.category_id, data.category_name = self._extract_category(soup)
         data.tags = self._extract_tags(soup)
         data.publish_date = self._extract_publish_date(soup)
-        data.images = self._extract_media_urls(soup, ["meta[property='og:image']", "meta[name='og:image']"], "content")
-        data.images.extend(self._extract_inline_images(soup))
+        data.images = self._extract_media_urls(
+            soup,
+            ["meta[property='og:image']", "meta[name='og:image']"],
+            "content",
+            skip_predicate=_should_skip_image_url,
+        )
+        data.images.extend(self._extract_inline_images(soup, main_container))
         data.images = _deduplicate_preserve_order(data.images)
 
         data.videos = self._extract_media_urls(soup, ["meta[property='og:video']"], "content")
-        data.videos.extend(self._extract_inline_videos(soup))
+        data.videos.extend(self._extract_inline_videos(soup, main_container))
         data.videos = _deduplicate_preserve_order(data.videos)
 
         return data
@@ -75,8 +85,9 @@ class ArticleExtractor:
         ]
         return _first_text(soup, selectors)
 
-    def _extract_content(self, soup: BeautifulSoup) -> str | None:
-        container = self._find_main_container(soup)
+    def _extract_content(self, soup: BeautifulSoup, container: Tag | None = None) -> str | None:
+        if container is None:
+            container = self._find_main_container(soup)
         if container is None:
             paragraphs = [
                 p
@@ -153,7 +164,47 @@ class ArticleExtractor:
     def _extract_category(self, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
         category_meta = soup.select_one("meta[property='article:section'], meta[name='article:section']")
         category_name = category_meta["content"].strip() if category_meta and category_meta.get("content") else None
-        category_id = category_name.lower().replace(" ", "_") if category_name else None
+
+        domain = urlparse(self.base_url).netloc.lower()
+        is_baodongkhoi = "baodongkhoi.vn" in domain
+
+        explicit_category_id: str | None = None
+
+        if is_baodongkhoi:
+            hidden_category = soup.select_one("input#txtnewscate")
+            if hidden_category and hidden_category.get("value"):
+                explicit_category_id = hidden_category["value"].strip().lower() or None
+
+        if not category_name:
+            baodongkhoi_link = soup.select_one("h2.catename-h1 a")
+            if baodongkhoi_link:
+                link_text = _normalize_whitespace(baodongkhoi_link.get_text(" ", strip=True))
+                if link_text:
+                    category_name = link_text
+                elif baodongkhoi_link.get("title"):
+                    category_name = _normalize_whitespace(baodongkhoi_link["title"])
+                if is_baodongkhoi and not explicit_category_id:
+                    explicit_category_id = _slug_from_url(baodongkhoi_link.get("href"))
+
+        if not category_name:
+            titlecate = soup.select_one("div.titlecate h1")
+            if titlecate:
+                link_texts = [
+                    _normalize_whitespace(link.get_text(" ", strip=True))
+                    for link in titlecate.find_all("a")
+                    if _normalize_whitespace(link.get_text(" ", strip=True))
+                ]
+                if link_texts:
+                    category_name = " > ".join(link_texts)
+                else:
+                    text_value = _normalize_whitespace(titlecate.get_text(" ", strip=True))
+                    if text_value:
+                        category_name = text_value.replace(">", " > ")
+
+        if not category_name and explicit_category_id:
+            category_name = _prettify_slug(explicit_category_id)
+
+        category_id = explicit_category_id or (_slugify(category_name) if category_name else None)
         return category_id, category_name
 
     def _extract_tags(self, soup: BeautifulSoup) -> str | None:
@@ -162,7 +213,7 @@ class ArticleExtractor:
             if meta_tag.get("content"):
                 tags.append(meta_tag["content"].strip())
 
-        keywords_meta = soup.select_one("meta[name='keywords']")
+        keywords_meta = soup.find("meta", attrs={"name": re.compile(r"^keywords$", re.IGNORECASE)})
         if keywords_meta and keywords_meta.get("content"):
             keywords = [kw.strip() for kw in keywords_meta["content"].split(",") if kw.strip()]
             tags.extend(keywords)
@@ -174,6 +225,8 @@ class ArticleExtractor:
             ".article-tags a",
             "ul[class*='tag'] a",
             "li[class*='tag'] a",
+            "div.block_tag a",
+            "a.tag_item",
             "[class*='keyword'] a",
             ".c-widget-tags a",
             ".onecms__tags a",
@@ -245,7 +298,11 @@ class ArticleExtractor:
         return None
 
     def _extract_media_urls(
-        self, soup: BeautifulSoup, selectors: Sequence[str], attr: str
+        self,
+        soup: BeautifulSoup,
+        selectors: Sequence[str],
+        attr: str,
+        skip_predicate: Optional[Callable[[str], bool]] = None,
     ) -> List[str]:
         urls: List[str] = []
         for selector in selectors:
@@ -253,22 +310,56 @@ class ArticleExtractor:
                 if not element.get(attr):
                     continue
                 media_url = element[attr].strip()
-                if media_url:
-                    urls.append(self._absolutize(media_url))
+                if not media_url:
+                    continue
+                resolved_url = self._absolutize(media_url)
+                if skip_predicate and skip_predicate(resolved_url):
+                    continue
+                urls.append(resolved_url)
         return urls
 
-    def _extract_inline_images(self, soup: BeautifulSoup) -> List[str]:
+    def _extract_inline_images(self, soup: BeautifulSoup, container: Tag | None = None) -> List[str]:
         urls: List[str] = []
-        for img in soup.select("article img, div[class*='article'] img, div[class*='content'] img"):
-            src = img.get("src") or img.get("data-src")
-            if not src:
-                continue
-            urls.append(self._absolutize(src))
+        search_space = container if container is not None else soup
+
+        image_tags: Sequence[Tag]
+        if container is not None:
+            image_tags = container.find_all("img")
+        else:
+            image_tags = soup.select("article img, div[class*='article'] img, div[class*='content'] img")
+
+        for img in image_tags:
+            for candidate in _collect_image_candidates(img):
+                resolved = self._absolutize(candidate)
+                if _should_skip_image_url(resolved):
+                    continue
+                urls.append(resolved)
+
+        source_tags: Sequence[Tag]
+        if container is not None:
+            source_tags = container.find_all("source")
+        else:
+            source_tags = soup.select("picture source, source[type*='image']")
+
+        for source_tag in source_tags:
+            for candidate in _collect_image_candidates(source_tag):
+                resolved = self._absolutize(candidate)
+                if _should_skip_image_url(resolved):
+                    continue
+                urls.append(resolved)
+
+        for element in search_space.select("[style*='background']"):
+            for candidate in _extract_urls_from_style(element.get("style", "")):
+                resolved = self._absolutize(candidate)
+                if _should_skip_image_url(resolved):
+                    continue
+                urls.append(resolved)
         return urls
 
-    def _extract_inline_videos(self, soup: BeautifulSoup) -> List[str]:
+    def _extract_inline_videos(self, soup: BeautifulSoup, container: Tag | None = None) -> List[str]:
         urls: List[str] = []
-        for video in soup.find_all("video"):
+        search_space = container if container is not None else soup
+        for video in search_space.find_all("video"):
             if video.get("src"):
                 urls.append(self._absolutize(video["src"]))
             for source in video.find_all("source"):
@@ -543,3 +634,131 @@ def _parse_datetime_text(text: str) -> Optional[datetime]:
     if parsed.tzinfo:
         return parsed.astimezone(timezone.utc)
     return parsed
+
+
+def _slugify(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = unicodedata.normalize("NFKD", value)
+    stripped = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    tokens = re.findall(r"[a-z0-9]+", stripped.lower())
+    if not tokens:
+        return None
+    return "_".join(tokens)
+
+
+_STYLE_URL_RE = re.compile(r"url\((['\"]?)(.+?)\1\)")
+_IMAGE_PLACEHOLDER_KEYWORDS = {
+    "logo",
+    "placeholder",
+    "default",
+    "banner",
+    "ads",
+    "adserver",
+    "icon",
+    "sprite",
+    "nophoto",
+    "no-photo",
+    "blank",
+    "spacer",
+    "tracking",
+    "pixel",
+}
+
+
+def _collect_image_candidates(tag: Tag) -> List[str]:
+    candidates: List[str] = []
+    attr_names = [
+        "src",
+        "data-src",
+        "data-original",
+        "data-lazy-src",
+        "data-medium-file",
+        "data-large-file",
+        "data-image",
+        "data-fullsrc",
+        "data-zoom-image",
+        "data-highres",
+    ]
+    for attr_name in attr_names:
+        value = tag.get(attr_name)
+        if value:
+            candidates.append(value)
+
+    for attr_name in ("srcset", "data-srcset"):
+        value = tag.get(attr_name)
+        if value:
+            candidates.extend(_parse_srcset(value))
+
+    if tag.get("style"):
+        candidates.extend(_extract_urls_from_style(tag["style"]))
+
+    seen: set[str] = set()
+    unique_candidates: List[str] = []
+    for candidate in candidates:
+        cleaned = candidate.strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        unique_candidates.append(cleaned)
+    return unique_candidates
+
+
+def _parse_srcset(value: str) -> List[str]:
+    results: List[str] = []
+    for part in value.split(","):
+        stripped = part.strip()
+        if not stripped:
+            continue
+        url_only = stripped.split(" ")[0]
+        if url_only:
+            results.append(url_only.strip())
+    return results
+
+
+def _extract_urls_from_style(style: str) -> List[str]:
+    if not style:
+        return []
+    matches = _STYLE_URL_RE.findall(style)
+    return [match[1].strip() for match in matches if match[1].strip()]
+
+
+def _should_skip_image_url(url: str) -> bool:
+    if not url:
+        return True
+    lowered = url.lower()
+    if lowered.startswith("data:"):
+        return True
+    if "insert_random_number_here" in lowered:
+        return True
+    if "www/delivery" in lowered:
+        return True
+
+    parsed = urlparse(url)
+    filename = posixpath.basename(parsed.path).lower()
+    if filename and any(keyword in filename for keyword in _IMAGE_PLACEHOLDER_KEYWORDS):
+        return True
+    if not filename and not parsed.netloc:
+        return True
+    return False
+
+
+def _slug_from_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    parsed = urlparse(url)
+    path = parsed.path or ""
+    parts = [segment for segment in path.split("/") if segment]
+    if not parts:
+        return None
+    slug = parts[-1]
+    if slug.endswith(".html"):
+        slug = slug[:-5]
+    return slug.lower() if slug else None
+
+
+def _prettify_slug(slug: str) -> str:
+    tokens = [token for token in re.split(r"[-_]+", slug) if token]
+    if not tokens:
+        return slug
+    return " ".join(tokens).upper()
