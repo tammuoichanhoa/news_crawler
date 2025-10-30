@@ -1,11 +1,4 @@
-"""
-Utilities for crawling Tuoi Tre Online articles by consuming the monthly sitemaps.
 
-The crawler fetches sitemap indices between two month-year boundaries,
-downloads individual article pages, extracts structured information that
-matches the data model defined in ``models.py`` and can optionally persist
-the result via SQLAlchemy.
-"""
 
 from __future__ import annotations
 
@@ -113,7 +106,7 @@ class TuoitreCrawler:
 
     BASE_SITEMAP_URL = "https://tuoitre.vn/StaticSitemaps/sitemaps-{year:04d}-{month}.xml"
     SITEMAP_NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-    DEFAULT_IMAGE_DIR = "/data/baoanh_crawler/tuoitre/images/"
+    DEFAULT_IMAGE_DIR = "/home/redd/Documents/tuoitre/tuoitre/images/"
     COMMENTS_PAGE_SIZE = 50
     _REQUEST_HEADERS = {
         "User-Agent": (
@@ -388,7 +381,8 @@ class TuoitreCrawler:
         tags = self._extract_tags(soup, ld_json)
         images = self._extract_images(soup, ld_json)
         videos = self._extract_videos(soup)
-        comments = self._collect_comments(article_url, soup)
+        # comments = self._collect_comments(article_url, soup)
+        
 
         article = ArticleData(
             title=title,
@@ -396,7 +390,7 @@ class TuoitreCrawler:
             content=content,
             category_id=category_id,
             category_name=category_name,
-            comments=comments,
+            # comments=comments,
             tags=tags,
             url=article_url,
             publish_date=publish_date,
