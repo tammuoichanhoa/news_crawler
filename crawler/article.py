@@ -1,4 +1,3 @@
-import json
 import logging
 import posixpath
 import re
@@ -8,13 +7,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urljoin, urlparse
-
+import json
 import requests
 from bs4 import BeautifulSoup, Tag
 from dateutil import parser as date_parser
 
 from db.models import Article, ArticleImage, ArticleVideo
+from .sitemap import SitemapEntry
 from .throttle import RequestThrottler
+from .utils import parse_w3c_datetime
 
 
 logger = logging.getLogger(__name__)
@@ -25,11 +26,16 @@ class ArticleData:
     url: str
     title: str | None = None
     description: str | None = None
+    summary: str | None = None
+    content_html: str | None = None
     content: str | None = None
     category_id: str | None = None
     category_name: str | None = None
     tags: str | None = None
     publish_date: datetime | None = None
+    last_modified: datetime | None = None
+    author: str | None = None
+    external_id: str | None = None
     images: List[str] = field(default_factory=list)
     videos: List[str] = field(default_factory=list)
 
@@ -45,13 +51,18 @@ class ArticleExtractor:
         data = ArticleData(url=self.base_url)
         data.title = self._extract_title(soup)
         data.description = self._extract_description(soup)
+        data.summary = self._extract_summary(soup)
 
         main_container = self._find_main_container(soup)
 
+        data.content_html = self._extract_content_html(main_container)
         data.content = self._extract_content(soup, main_container)
         data.category_id, data.category_name = self._extract_category(soup)
         data.tags = self._extract_tags(soup)
         data.publish_date = self._extract_publish_date(soup)
+        data.last_modified = self._extract_last_modified(soup)
+        data.author = self._extract_author(soup)
+
         data.images = self._extract_media_urls(
             soup,
             ["meta[property='og:image']", "meta[name='og:image']"],
@@ -84,6 +95,50 @@ class ArticleExtractor:
             "p.summary",
         ]
         return _first_text(soup, selectors)
+
+    def _extract_summary(self, soup: BeautifulSoup) -> str | None:
+        selectors = [
+            "div.article__sapo",
+            "div.article__lead",
+            "div.article__desc",
+            "div.cms-desc",
+            "[itemprop='description']",
+            ".article-sapo",
+            ".article-summary",
+        ]
+        for selector in selectors:
+            element = soup.select_one(selector)
+            if not element:
+                continue
+            text = element.get_text(" ", strip=True)
+            text = _normalize_whitespace(text)
+            if text:
+                return text
+        return None
+
+    def _extract_content_html(self, container: Tag | None) -> str | None:
+        if container is None:
+            return None
+        soup_fragment = BeautifulSoup(str(container), "lxml")
+        root = soup_fragment.find()
+        if root is None:
+            return None
+
+        for selector in ["script", "style", "noscript", "iframe", "form"]:
+            for element in root.select(selector):
+                element.decompose()
+
+        for selector in [".rennab", ".adsbygoogle", ".adv-box", "[data-position*='SdaArticle']"]:
+            for element in root.select(selector):
+                element.decompose()
+
+        for img in root.find_all("img"):
+            data_src = img.get("data-src") or img.get("data-original")
+            if data_src and not img.get("src"):
+                img["src"] = data_src
+
+        cleaned_html = root.decode_contents().strip()
+        return cleaned_html or None
 
     def _extract_content(self, soup: BeautifulSoup, container: Tag | None = None) -> str | None:
         if container is None:
@@ -215,11 +270,44 @@ class ArticleExtractor:
         category_id = explicit_category_id or (_slugify(category_name) if category_name else None)
         return category_id, category_name
 
+    def _extract_author(self, soup: BeautifulSoup) -> str | None:
+        selectors = [
+            ".article__author",
+            ".article-author",
+            "[itemprop='author']",
+            ".author-name",
+            "meta[name='author']",
+            "meta[property='article:author']",
+        ]
+        for selector in selectors:
+            element = soup.select_one(selector)
+            if not element:
+                continue
+            if element.name == "meta":
+                content = element.get("content")
+                if content and content.strip():
+                    return _normalize_whitespace(content)
+            else:
+                text = element.get_text(" ", strip=True)
+                text = _normalize_whitespace(text)
+                if text:
+                    return text
+        return None
+
     def _extract_tags(self, soup: BeautifulSoup) -> str | None:
         tags: List[str] = []
         for meta_tag in soup.select("meta[property='article:tag']"):
             if meta_tag.get("content"):
-                tags.append(meta_tag["content"].strip())
+                content = meta_tag["content"].strip()
+                if not content:
+                    continue
+                if "," in content:
+                    for part in content.split(","):
+                        part = part.strip()
+                        if part:
+                            tags.append(part)
+                else:
+                    tags.append(content)
 
         keywords_meta = soup.find("meta", attrs={"name": re.compile(r"^keywords$", re.IGNORECASE)})
         if keywords_meta and keywords_meta.get("content"):
@@ -301,6 +389,22 @@ class ArticleExtractor:
                 if not text:
                     continue
                 parsed = _parse_datetime_text(text)
+                if parsed:
+                    return parsed
+        return None
+
+    def _extract_last_modified(self, soup: BeautifulSoup) -> datetime | None:
+        selectors = [
+            ("meta[property='article:modified_time']", "content"),
+            ("meta[name='lastmod']", "content"),
+            ("meta[name='last-modified']", "content"),
+            ("time[itemprop='dateModified']", "datetime"),
+            ("time[datetime][itemprop='dateModified']", "datetime"),
+        ]
+        for selector, attr in selectors:
+            element = soup.select_one(selector)
+            if element and element.get(attr):
+                parsed = _parse_datetime(element[attr])
                 if parsed:
                     return parsed
         return None
@@ -403,7 +507,16 @@ class ArticleCrawler:
         if user_agent:
             self.http.headers["User-Agent"] = user_agent
 
-    def crawl(self, url: str) -> bool:
+    def crawl(self, entry: SitemapEntry | str) -> bool:
+        if isinstance(entry, SitemapEntry):
+            url = entry.url
+            sitemap_lastmod = entry.lastmod
+            sitemap_article_id = entry.article_id
+        else:
+            url = entry
+            sitemap_lastmod = None
+            sitemap_article_id = None
+
         try:
             if self.throttler:
                 self.throttler.wait()
@@ -415,13 +528,23 @@ class ArticleCrawler:
 
         extractor = ArticleExtractor(url)
         article_data = extractor.extract(response.text)
+        article_data.external_id = article_data.external_id or sitemap_article_id
         if not article_data.title or not article_data.content:
             logger.info("Skipping %s due to missing title/content", url)
             return False
 
-        return self._persist(article_data)
+        return self._persist(
+            article_data,
+            sitemap_lastmod=sitemap_lastmod,
+            sitemap_article_id=sitemap_article_id,
+        )
 
-    def _persist(self, data: ArticleData) -> bool:
+    def _persist(
+        self,
+        data: ArticleData,
+        sitemap_lastmod: str | None = None,
+        sitemap_article_id: str | None = None,
+    ) -> bool:
         session = self.session_factory()
         try:
             existing = session.query(Article).filter(Article.url == data.url).one_or_none()
@@ -429,9 +552,10 @@ class ArticleCrawler:
                 logger.debug("Article already stored: %s", data.url)
                 return False
 
+            description_value = data.summary or data.description
             article = Article(
                 title=data.title[:1024],
-                description=data.description,
+                description=description_value,
                 content=data.content,
                 category_id=data.category_id,
                 category_name=data.category_name,
@@ -450,6 +574,27 @@ class ArticleCrawler:
                     )
                 )
 
+            metadata: dict[str, str] = {}
+            if data.summary:
+                metadata["summary"] = data.summary
+            if data.description and data.description != description_value:
+                metadata["meta_description"] = data.description
+            if data.content_html:
+                metadata["body_html"] = data.content_html
+            if data.author:
+                metadata["author"] = data.author
+            if data.last_modified:
+                metadata["last_modified"] = data.last_modified.isoformat()
+            sitemap_dt = parse_w3c_datetime(sitemap_lastmod) if sitemap_lastmod else None
+            if sitemap_dt:
+                metadata["sitemap_lastmod"] = sitemap_dt.isoformat()
+            elif sitemap_lastmod:
+                metadata["sitemap_lastmod_raw"] = sitemap_lastmod
+            external_id = data.external_id or sitemap_article_id
+            if external_id:
+                metadata["article_external_id"] = external_id
+            # if metadata:
+                # article.comments = metadata
             for idx, video_url in enumerate(data.videos[: self.max_videos], start=1):
                 article.videos.append(
                     ArticleVideo(
