@@ -166,9 +166,17 @@ class ArticleExtractor:
         category_name = category_meta["content"].strip() if category_meta and category_meta.get("content") else None
 
         domain = urlparse(self.base_url).netloc.lower()
+        is_baocamau = "baocamau.vn" in domain
         is_baodongkhoi = "baodongkhoi.vn" in domain
 
         explicit_category_id: str | None = None
+
+        if is_baocamau:
+            baocamau_category_id, baocamau_category_name = _extract_baocamau_category(soup)
+            if baocamau_category_id:
+                explicit_category_id = baocamau_category_id
+            if baocamau_category_name:
+                category_name = baocamau_category_name
 
         if is_baodongkhoi:
             hidden_category = soup.select_one("input#txtnewscate")
@@ -741,6 +749,68 @@ def _should_skip_image_url(url: str) -> bool:
     if not filename and not parsed.netloc:
         return True
     return False
+
+
+def _extract_baocamau_category(soup: BeautifulSoup) -> Tuple[str | None, str | None]:
+    def _clean_slug(value) -> str | None:
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        return None
+
+    def _find_name_for_slug(slug: str | None) -> str | None:
+        if not slug:
+            return None
+        normalized_slug = slug.strip("/").lower()
+        candidate_selectors = [
+            f".category-title-box a[href*='/{normalized_slug}/']",
+            f"a[href*='/{normalized_slug}/']",
+        ]
+        for selector in candidate_selectors:
+            for link in soup.select(selector):
+                href = (link.get("href") or "").lower()
+                if f"/{normalized_slug}/" not in href:
+                    continue
+                text = _normalize_whitespace(link.get_text(" ", strip=True))
+                if text:
+                    return text
+        return None
+
+    main_slug: str | None = None
+    sub_slug: str | None = None
+    input_element = soup.select_one("input[name='dataPostComment']")
+    if input_element and input_element.get("value"):
+        raw_value = input_element["value"]
+        try:
+            payload = json.loads(raw_value)
+        except (json.JSONDecodeError, TypeError):
+            payload = None
+        if isinstance(payload, dict):
+            main_slug = _clean_slug(payload.get("newsCate"))
+            sub_slug = _clean_slug(payload.get("newsSubcate"))
+
+    slug_to_use = sub_slug or main_slug
+    main_name = _find_name_for_slug(main_slug)
+    sub_name = _find_name_for_slug(sub_slug)
+
+    if sub_slug and sub_name:
+        category_name = f"{main_name} > {sub_name}" if main_name and main_name != sub_name else sub_name
+    else:
+        category_name = sub_name or main_name
+
+    if not category_name:
+        header_link = soup.select_one(".category-title-box .news-block-header span a")
+        if header_link:
+            text = _normalize_whitespace(header_link.get_text(" ", strip=True))
+            if text:
+                category_name = text
+            if not slug_to_use:
+                slug_to_use = _slug_from_url(header_link.get("href"))
+
+    if slug_to_use:
+        slug_to_use = slug_to_use.strip("/ ").lower()
+
+    return slug_to_use, category_name
 
 
 def _slug_from_url(url: str | None) -> str | None:
