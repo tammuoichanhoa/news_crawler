@@ -18,3 +18,5 @@ python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baodongkh
 python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baothainguyen --allowed-extension .html --slug bbk_baothainguyen_vn --skip-article-ingest
 python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baocamau --allowed-extension .html --slug baocamau_vn --skip-article-ingest
 python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baocantho --allowed-extension .html --slug baocantho_com_vn --skip-article-ingest
+
+python main.py --sitemaps-file sitemaps.txt --slug www_sggp_org_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*' --url-include '*-post*.html'
