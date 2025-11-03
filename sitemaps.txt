@@ -1,4 +1,1 @@
-https://www.sggp.org.vn/sitemap.xml
-https://baogialai.com.vn/sitemap.xml
-https://baolamdong.vn/sitemap.xml
-https://baohatinh.vn/sitemap.xml
+https://baolongan.vn/sitemap.xml

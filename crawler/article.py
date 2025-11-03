@@ -194,6 +194,14 @@ class ArticleExtractor:
         return "\n\n".join(collected_texts)
 
     def _find_main_container(self, soup: BeautifulSoup):
+        domain = urlparse(self.base_url).netloc.lower()
+        if "baolaocai.vn" in domain:
+            specific_container = soup.select_one("div.article__body.zce-content-body.cms-body")
+            if not specific_container:
+                specific_container = soup.select_one(".article__body.zce-content-body.cms-body")
+            if specific_container and not _is_in_excluded_section(specific_container):
+                return specific_container
+
         selectors = [
             "[itemprop='articleBody']",
             "article",
@@ -223,6 +231,7 @@ class ArticleExtractor:
         domain = urlparse(self.base_url).netloc.lower()
         is_baocamau = "baocamau.vn" in domain
         is_baodongkhoi = "baodongkhoi.vn" in domain
+        is_baolongan = "baolongan.vn" in domain
 
         explicit_category_id: str | None = None
 
@@ -232,6 +241,13 @@ class ArticleExtractor:
                 explicit_category_id = baocamau_category_id
             if baocamau_category_name:
                 category_name = baocamau_category_name
+
+        if is_baolongan:
+            baolongan_category_id, baolongan_category_name = _extract_baolongan_category(soup)
+            if baolongan_category_id:
+                explicit_category_id = baolongan_category_id
+            if baolongan_category_name:
+                category_name = baolongan_category_name
 
         if is_baodongkhoi:
             hidden_category = soup.select_one("input#txtnewscate")
@@ -894,6 +910,55 @@ def _should_skip_image_url(url: str) -> bool:
     if not filename and not parsed.netloc:
         return True
     return False
+
+
+def _extract_baolongan_category(soup: BeautifulSoup) -> Tuple[str | None, str | None]:
+    def _clean_value(value: str | None) -> str | None:
+        if not value:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    def _get_hidden_value(selector: str) -> str | None:
+        element = soup.select_one(selector)
+        if not element:
+            return None
+        value = _clean_value(element.get("value"))
+        if not value:
+            return None
+        return value.lower()
+
+    main_slug = _get_hidden_value("input#txtnewscate")
+    sub_slug = _get_hidden_value("input#txtnewssubcate")
+
+    slug_to_use: str | None = None
+    if sub_slug and sub_slug != "all":
+        slug_to_use = sub_slug
+    elif main_slug:
+        slug_to_use = main_slug
+
+    category_name: str | None = None
+    title_link = soup.select_one("div.titlecate h2 a")
+    if title_link:
+        text = _normalize_whitespace(title_link.get_text(" ", strip=True))
+        if text:
+            category_name = text
+        if not slug_to_use:
+            slug_from_link = _slug_from_url(title_link.get("href"))
+            if slug_from_link:
+                slug_to_use = slug_from_link
+
+    if not category_name:
+        heading = soup.select_one("div.titlecate h2")
+        if heading:
+            text = _normalize_whitespace(heading.get_text(" ", strip=True))
+            if text:
+                category_name = text
+
+    if not category_name and slug_to_use:
+        category_name = _prettify_slug(slug_to_use)
+
+    return slug_to_use, category_name
 
 
 def _extract_baocamau_category(soup: BeautifulSoup) -> Tuple[str | None, str | None]:
