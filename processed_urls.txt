@@ -1,4 +1,17 @@
+crawl_v1
+https://baohaiphong.vn/sitemap.xml
+https://baodanang.vn/sitemap.xml
+
+
+crawl_v2
 https://baocantho.com.vn/sitemapnews.xml
 https://bbk.baothainguyen.vn/sitemap.xml
 https://baodongkhoi.vn/sitemap.xml
 https://baocamau.vn/sitemap.xml
+https://baolongan.vn/sitemap.xml
+
+crawl_v3
+https://www.sggp.org.vn/sitemap.xml
+https://baogialai.com.vn/sitemap.xml
+https://baolamdong.vn/sitemap.xml
+https://baohatinh.vn/sitemap.xml

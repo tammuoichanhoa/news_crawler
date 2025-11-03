@@ -46,6 +46,11 @@ def parse_args() -> argparse.Namespace:
         action="append",
         help="Only follow child sitemaps whose URL matches these glob patterns (e.g. --sitemap-include '*sitemap-article*').",
     )
+    parser.add_argument(
+        "--sitemap-exclude",
+        action="append",
+        help="Skip child sitemaps whose URL matches these glob patterns (e.g. --sitemap-exclude '*categories*').",
+    )
     parser.add_argument("--user-agent", help="Override the HTTP User-Agent header for outbound requests.")
     parser.add_argument(
         "--direct-crawl",
@@ -84,6 +89,16 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Maximum delay (seconds) to wait between HTTP requests. Defaults to the minimum delay if omitted.",
     )
+    parser.add_argument(
+        "--url-include",
+        action="append",
+        help="Only keep URLs whose value matches these glob patterns (e.g. --url-include '*-post*.html').",
+    )
+    parser.add_argument(
+        "--url-exclude",
+        action="append",
+        help="Skip URLs whose value matches these glob patterns (e.g. --url-exclude '*category*').",
+    )
 
     return parser.parse_args()
 
@@ -111,6 +126,9 @@ def main() -> None:
         sitemap_include_patterns=args.sitemap_include,
         request_throttler=throttler,
         user_agent=args.user_agent,
+        sitemap_exclude_patterns=args.sitemap_exclude,
+        url_include_patterns=args.url_include,
+        url_exclude_patterns=args.url_exclude,
     )
 
     sitemap_urls: list[str] | None = None

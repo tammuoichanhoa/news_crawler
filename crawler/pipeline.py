@@ -1,12 +1,12 @@
 import logging
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import Dict, Iterable, List, Sequence
 
 from sqlalchemy.orm import sessionmaker
 
-from .sitemap import SitemapCrawler
+from .sitemap import SitemapCrawler, SitemapEntry
 from .storage import UrlStore
-from .utils import slugify_host
+from .utils import slugify_host, parse_w3c_datetime
 from .article import ArticleCrawler
 from .throttle import RequestThrottler
 
@@ -23,6 +23,9 @@ class CrawlPipeline:
         session_factory: sessionmaker,
         allowed_extensions: Sequence[str] | None = None,
         sitemap_include_patterns: Sequence[str] | None = None,
+        sitemap_exclude_patterns: Sequence[str] | None = None,
+        url_include_patterns: Sequence[str] | None = None,
+        url_exclude_patterns: Sequence[str] | None = None,
         request_throttler: RequestThrottler | None = None,
         user_agent: str | None = None,
     ) -> None:
@@ -30,8 +33,11 @@ class CrawlPipeline:
         self.sitemap_crawler = SitemapCrawler(
             allowed_extensions=allowed_extensions,
             include_patterns=sitemap_include_patterns,
+            exclude_patterns=sitemap_exclude_patterns,
             user_agent=user_agent,
             throttler=request_throttler,
+            url_include_patterns=url_include_patterns,
+            url_exclude_patterns=url_exclude_patterns,
         )
         self.article_crawler = ArticleCrawler(
             session_factory=session_factory,
@@ -43,8 +49,8 @@ class CrawlPipeline:
         self,
         sitemap_urls: Iterable[str],
         slug_filter: Sequence[str] | None = None,
-    ) -> dict[str, List[str]]:
-        urls_by_slug: dict[str, List[str]] = {}
+    ) -> Dict[str, List[SitemapEntry]]:
+        urls_by_slug: Dict[str, List[SitemapEntry]] = {}
         allowed_slugs = set(slug_filter) if slug_filter else None
 
         for sitemap_url in sitemap_urls:
@@ -54,10 +60,11 @@ class CrawlPipeline:
                 continue
 
             logger.info("Processing sitemap %s (slug=%s)", sitemap_url, slug)
-            urls = self.sitemap_crawler.fetch_urls(sitemap_url)
-            logger.info("Fetched %s URLs from %s", len(urls), sitemap_url)
-            if urls:
-                urls_by_slug.setdefault(slug, []).extend(urls)
+            entries = self.sitemap_crawler.fetch_urls(sitemap_url)
+            entries = self._filter_entries(slug, entries)
+            logger.info("Fetched %s URLs from %s", len(entries), sitemap_url)
+            if entries:
+                urls_by_slug.setdefault(slug, []).extend(entries)
         return urls_by_slug
 
     def collect_urls(self, sitemap_urls: Iterable[str], slug_filter: Sequence[str] | None = None) -> int:
@@ -110,8 +117,8 @@ class CrawlPipeline:
             logger.info("Crawling %s URLs for slug=%s", len(urls), slug)
             current_index = start_index
 
-            for url in urls:
-                stored = self.article_crawler.crawl(url)
+            for entry in urls:
+                stored = self.article_crawler.crawl(entry)
                 if stored:
                     success_count += 1
                 processed_total += 1
@@ -154,8 +161,8 @@ class CrawlPipeline:
 
             success_count = 0
             logger.info("Directly crawling %s URLs for slug=%s", len(urls), slug)
-            for url in urls:
-                stored = self.article_crawler.crawl(url)
+            for entry in urls:
+                stored = self.article_crawler.crawl(entry)
                 if stored:
                     success_count += 1
                 processed_total += 1
@@ -166,3 +173,35 @@ class CrawlPipeline:
             if max_total_urls is not None and processed_total >= max_total_urls:
                 break
         return summary
+
+    def _filter_entries(self, slug: str, entries: List[SitemapEntry]) -> List[SitemapEntry]:
+        if not entries:
+            return []
+
+        if slug in {"www_sggp_org_vn", "sggp_org_vn"}:
+            entries = [entry for entry in entries if entry.article_id]
+
+        deduped: Dict[str, SitemapEntry] = {}
+        for entry in entries:
+            key = entry.dedupe_key
+            existing = deduped.get(key)
+            if not existing:
+                deduped[key] = entry
+                continue
+            if self._is_newer(entry, existing):
+                deduped[key] = entry
+        return list(deduped.values())
+
+    @staticmethod
+    def _is_newer(candidate: SitemapEntry, incumbent: SitemapEntry) -> bool:
+        if candidate.lastmod and not incumbent.lastmod:
+            return True
+        if not candidate.lastmod:
+            return False
+        candidate_dt = parse_w3c_datetime(candidate.lastmod)
+        incumbent_dt = parse_w3c_datetime(incumbent.lastmod) if incumbent.lastmod else None
+        if candidate_dt and incumbent_dt:
+            return candidate_dt > incumbent_dt
+        if candidate_dt and not incumbent_dt:
+            return True
+        return False
