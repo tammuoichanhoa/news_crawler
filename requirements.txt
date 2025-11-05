@@ -1,0 +1,8 @@
+beautifulsoup4
+python-dateutil
+requests
+sqlalchemy
+uuid-utils
+lxml
+python-dotenv
+psycopg2-binary
