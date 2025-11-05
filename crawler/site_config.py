@@ -55,6 +55,38 @@ ARTICLE_SITE_CONFIG: Dict[str, ArticleSiteConfig] = {
     "baodongkhoi.vn": ArticleSiteConfig(
         category_extractors=("baodongkhoi_category",),
     ),
+    "nguoiquansat.vn": ArticleSiteConfig(
+        main_container_selectors=(
+            "article.entry.entry-no-padding",
+            "div.b-maincontent.normal-article-content article.entry",
+        ),
+        main_container_keywords=("entry", "article"),
+    ),
+    "giadinh.suckhoedoisong.vn": ArticleSiteConfig(
+        main_container_selectors=(
+            "div.detail-content.afcbc-body[data-role='content']",
+            "div.detail-content[data-role='content']",
+            "div.detail__content-page div.detail-content",
+        ),
+        main_container_keywords=("detail-content", "afcbc-body", "content"),
+        category_extractors=("giadinh_suckhoedoisong_category",),
+    ),
+    "nhandan.vn": ArticleSiteConfig(
+        main_container_selectors=(
+            "div.article__body",
+            "div.article__main",
+            "article.article",
+            "div.cms-body",
+        ),
+        main_container_keywords=("article__body", "cms-body", "zce-content-body", "article"),
+    ),
+    "anninhthudo.vn": ArticleSiteConfig(
+        main_container_selectors=(
+            "div.article__body",
+            "div.cms-body",
+        ),
+        main_container_keywords=("article__body", "cms-body", "zce-content-body", "article"),
+    ),
 }
 
 
@@ -71,4 +103,3 @@ def get_article_site_config(domain: str) -> ArticleSiteConfig | None:
         if _matches_domain(normalized, pattern):
             return config
     return None
-

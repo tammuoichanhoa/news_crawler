@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import posixpath
@@ -7,7 +8,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html import unescape
-from typing import Callable, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup, Tag
@@ -496,12 +497,28 @@ class ArticleExtractor:
     def _extract_inline_videos(self, soup: BeautifulSoup, container: Tag | None = None) -> List[str]:
         urls: List[str] = []
         search_space = container if container is not None else soup
+
+        def append_from_tag(tag: Tag) -> None:
+            for candidate in _collect_video_candidates(tag):
+                if _should_skip_video_candidate(candidate):
+                    continue
+                resolved = self._absolutize(candidate)
+                if _should_skip_video_candidate(resolved):
+                    continue
+                urls.append(resolved)
+
         for video in search_space.find_all("video"):
-            if video.get("src"):
-                urls.append(self._absolutize(video["src"]))
+            append_from_tag(video)
             for source in video.find_all("source"):
-                if source.get("src"):
-                    urls.append(self._absolutize(source["src"]))
+                append_from_tag(source)
+
+        for element in search_space.find_all(True):
+            if element.name == "video":
+                continue
+            if not any(attr in element.attrs for attr in _VIDEO_WRAPPER_ATTRS):
+                continue
+            append_from_tag(element)
+
         return urls
 
     def _absolutize(self, href: str) -> str:
@@ -822,7 +839,15 @@ def _slugify(value: str | None) -> str | None:
     tokens = re.findall(r"[a-z0-9]+", stripped.lower())
     if not tokens:
         return None
-    return "_".join(tokens)
+    slug = "_".join(tokens)
+    if len(slug) <= 100:
+        return slug
+    digest = hashlib.sha1(slug.encode("utf-8")).hexdigest()[:8]
+    allowed = max(1, 100 - len(digest) - 1)
+    trimmed = slug[:allowed].rstrip("_")
+    if not trimmed:
+        trimmed = slug[:allowed]
+    return f"{trimmed}_{digest}"
 
 
 _STYLE_URL_RE = re.compile(r"url\((['\"]?)(.+?)\1\)")
@@ -919,6 +944,176 @@ def _should_skip_image_url(url: str) -> bool:
     if not filename and not parsed.netloc:
         return True
     return False
+
+
+_URL_IN_TEXT_RE = re.compile(r"https?://[^\s'\"<>]+|//[^\s'\"<>]+")
+_VIDEO_EXTENSIONS = (
+    ".mp4",
+    ".m3u8",
+    ".webm",
+    ".mov",
+    ".m4v",
+    ".flv",
+    ".avi",
+    ".wmv",
+)
+
+_VIDEO_ATTRIBUTE_NAMES = (
+    "src",
+    "data-src",
+    "data-href",
+    "data-url",
+    "data-video",
+    "data-video-src",
+    "data-video-url",
+    "data-video-sd",
+    "data-video-hd",
+    "data-default-src",
+    "data-mp4",
+    "data-file",
+    "data-files",
+    "data-source",
+    "data-fluid-hd-src",
+    "data-fluid-sd-src",
+    "data-fluid-src",
+    "data-fluid-source",
+    "data-hls-src",
+    "data-hls",
+    "data-dash-src",
+    "data-download",
+    "data-stream",
+    "data-stream-src",
+    "data-playlist",
+    "data-embed",
+)
+
+_VIDEO_WRAPPER_ATTRS = tuple(attr for attr in _VIDEO_ATTRIBUTE_NAMES if attr != "src")
+
+
+def _collect_video_candidates(tag: Tag) -> List[str]:
+    candidates: List[str] = []
+    seen: set[str] = set()
+
+    for attr_name in _VIDEO_ATTRIBUTE_NAMES:
+        if attr_name not in tag.attrs:
+            continue
+        raw_value = tag.get(attr_name)
+        values: List[str]
+        if isinstance(raw_value, (list, tuple)):
+            values = [str(item) for item in raw_value if item]
+        elif raw_value is None:
+            continue
+        else:
+            values = [str(raw_value)]
+
+        for value in values:
+            cleaned = unescape(value).strip()
+            if not cleaned:
+                continue
+            if cleaned.startswith("//"):
+                cleaned = f"https:{cleaned}"
+
+            if cleaned.startswith("{") or cleaned.startswith("["):
+                for extracted in _extract_urls_from_jsonish(cleaned):
+                    normalized = extracted.strip()
+                    if not normalized:
+                        continue
+                    if normalized.startswith("//"):
+                        normalized = f"https:{normalized}"
+                    if normalized in seen:
+                        continue
+                    seen.add(normalized)
+                    candidates.append(normalized)
+                continue
+
+            matches = _URL_IN_TEXT_RE.findall(cleaned)
+            if matches:
+                for match in matches:
+                    normalized = match.strip()
+                    if normalized.startswith("//"):
+                        normalized = f"https:{normalized}"
+                    if normalized in seen:
+                        continue
+                    seen.add(normalized)
+                    candidates.append(normalized)
+                continue
+
+            parts = re.split(r"[|;]", cleaned) if ("|" in cleaned or ";" in cleaned) else [cleaned]
+            final_parts: List[str] = []
+            for part in parts:
+                part = part.strip()
+                if not part:
+                    continue
+                if "," in part and "http" not in part:
+                    final_parts.extend(p.strip() for p in part.split(",") if p.strip())
+                else:
+                    final_parts.append(part)
+
+            for part in final_parts:
+                candidate = part.strip()
+                if not candidate:
+                    continue
+                if candidate.startswith("//"):
+                    candidate = f"https:{candidate}"
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                candidates.append(candidate)
+
+    return candidates
+
+
+def _extract_urls_from_jsonish(raw: str) -> List[str]:
+    data = _load_json_script_loose(raw)
+    if data is None:
+        return []
+    results: List[str] = []
+    _collect_urls_from_structure(data, results)
+    return results
+
+
+def _collect_urls_from_structure(node: Any, results: List[str]) -> None:
+    if isinstance(node, str):
+        normalized = node.strip()
+        if normalized:
+            if normalized.startswith("//"):
+                normalized = f"https:{normalized}"
+            if _looks_like_video_url(normalized) and normalized not in results:
+                results.append(normalized)
+        return
+    if isinstance(node, dict):
+        for value in node.values():
+            _collect_urls_from_structure(value, results)
+        return
+    if isinstance(node, (list, tuple, set)):
+        for item in node:
+            _collect_urls_from_structure(item, results)
+
+
+def _looks_like_video_url(value: str) -> bool:
+    lowered = value.lower()
+    if lowered.startswith(("javascript:", "data:", "#")):
+        return False
+    parsed = urlparse(value)
+    if parsed.scheme or parsed.netloc:
+        path = parsed.path
+    else:
+        path = value.split("?", 1)[0].split("#", 1)[0]
+    extension = posixpath.splitext(path)[1].lower()
+    if extension in _VIDEO_EXTENSIONS:
+        return True
+    if "m3u8" in lowered or "manifest" in lowered or "stream" in lowered:
+        return True
+    return False
+
+
+def _should_skip_video_candidate(value: str) -> bool:
+    if not value:
+        return True
+    lowered = value.lower()
+    if lowered.startswith(("javascript:", "data:", "#")):
+        return True
+    return not _looks_like_video_url(value)
 
 
 _TRAILING_COMMA_RE = re.compile(r",\s*([\]}])")
@@ -1229,11 +1424,33 @@ def _extract_baodongkhoi_category(_: str, soup: BeautifulSoup) -> Tuple[str | No
     return explicit_id, category_name
 
 
+def _extract_giadinh_suckhoedoisong_category(_: str, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
+    category_link = soup.select_one("a.category-page__name[data-role='cate-name']")
+    if category_link is None:
+        category_link = soup.select_one("a.category-page__name")
+
+    category_name: str | None = None
+    category_id: str | None = None
+
+    if category_link:
+        text_value = _normalize_whitespace(category_link.get_text(" ", strip=True))
+        if text_value:
+            category_name = text_value
+        elif category_link.get("title"):
+            title_text = _normalize_whitespace(category_link["title"])
+            if title_text:
+                category_name = title_text
+        category_id = _slug_from_url(category_link.get("href"))
+
+    return category_id, category_name
+
+
 _CATEGORY_EXTRACTORS: dict[str, Callable[[str, BeautifulSoup], Tuple[str | None, str | None]]] = {
     "genk_category": _extract_genk_category,
     "kenh14_category": _extract_kenh14_category,
     "baocamau_category": _extract_baocamau_category,
     "baodongkhoi_category": _extract_baodongkhoi_category,
+    "giadinh_suckhoedoisong_category": _extract_giadinh_suckhoedoisong_category,
 }
 
 _TAG_EXTRACTORS: dict[str, Callable[[BeautifulSoup], List[str]]] = {

@@ -1,3 +1,16 @@
 https://genk.vn/sitemap.xml
 https://kenh14.vn/sitemap.xml
 https://mattran.org.vn/sitemap.xml
+
+https://nguoiquansat.vn/sitemap.xml
+https://www.tinnhanhchungkhoan.vn/sitemap.xml
+https://giadinh.suckhoedoisong.vn/sitemap.xml
+https://nhandan.vn/sitemap.xml
+
+https://vietbao.vn/sitemap.xml
+https://www.anninhthudo.vn/sitemap.xml
+
+https://daibieunhandan.vn/sitemap.xml
+https://bnews.vn/sitemap.xml
+https://vneconomy.vn/sitemap.xml
+https://cafebiz.vn/sitemap.xml

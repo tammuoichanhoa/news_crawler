@@ -18,6 +18,27 @@ KENH14_SITEMAP_EXCLUDE_PATTERNS = [
     "*kenh14.vn/google-news-sitemap.xml",
     "*kenh14.vn/latestnews-sitemap.xml",
 ]
+TINNHANHCHUNGKHOAN_SITEMAP_EXCLUDE_PATTERNS = [
+    "*tinnhanhchungkhoan.vn/sitemaps/categories.xml",
+    "*tinnhanhchungkhoan.vn/sitemaps/topics.xml",
+]
+
+GIADINH_SUCKHOEDOISONG_SITEMAP_EXCLUDE_PATTERNS = [
+    "*giadinh.suckhoedoisong.vn/sitemaps/category.rss",
+    "*giadinh.suckhoedoisong.vn/google-news-sitemap.xml",
+    "*giadinh.suckhoedoisong.vn/latestnews-sitemap.xml",
+]
+
+NHANDAN_SITEMAP_EXCLUDE_PATTERNS = [
+    "*nhandan.vn/sitemaps/categories.xml",
+    "*nhandan.vn/sitemaps/topics.xml",
+    "*nhandan.vn",
+]
+
+ANNINHTHUDO_SITEMAP_EXCLUDE_PATTERNS = [
+    "*anninhthudo.vn/sitemaps/categories.xml",
+    "*anninhthudo.vn/sitemaps/topics.xml",
+]
 
 
 def configure_logging(verbose: bool) -> None:
@@ -156,7 +177,13 @@ def main() -> None:
         sitemap_urls = read_sitemap_list(Path(args.sitemaps_file))
 
     sitemap_exclude_patterns = list(args.sitemap_exclude or [])
-    for pattern in GENK_SITEMAP_EXCLUDE_PATTERNS + KENH14_SITEMAP_EXCLUDE_PATTERNS:
+    for pattern in (
+        GENK_SITEMAP_EXCLUDE_PATTERNS
+        + KENH14_SITEMAP_EXCLUDE_PATTERNS
+        + GIADINH_SUCKHOEDOISONG_SITEMAP_EXCLUDE_PATTERNS
+        + NHANDAN_SITEMAP_EXCLUDE_PATTERNS
+        + ANNINHTHUDO_SITEMAP_EXCLUDE_PATTERNS
+    ):
         if pattern not in sitemap_exclude_patterns:
             sitemap_exclude_patterns.append(pattern)
 
