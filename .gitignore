@@ -1,3 +1,4 @@
 .trash/
 .venv/
 .env/
+stored_urls/*
