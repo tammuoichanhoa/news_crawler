@@ -113,7 +113,12 @@ class ArticleExtractor:
             "meta[property='og:description']",
             "p.summary",
         ]
-        return _first_text(soup, selectors)
+        description = _first_text(soup, selectors)
+        if description:
+            return description
+        if self.site_config and self.site_config.description_selectors:
+            return _first_text(soup, self.site_config.description_selectors)
+        return None
 
     def _extract_summary(self, soup: BeautifulSoup) -> str | None:
         selectors = [
@@ -208,6 +213,9 @@ class ArticleExtractor:
                 else:
                     queue.append(child)
 
+        if not collected_texts:
+            return None
+        collected_texts = _filter_domain_content(self.domain, collected_texts)
         if not collected_texts:
             return None
         return "\n\n".join(collected_texts)
@@ -594,7 +602,9 @@ class ArticleCrawler:
                 logger.debug("Article already stored: %s", data.url)
                 return False
 
-            description_value = data.summary or data.description
+            description_value = data.description or data.summary
+            if data.summary and len(data.summary) > len(description_value or ""):
+                description_value = data.summary
             article = Article(
                 title=data.title[:1024],
                 description=description_value,
@@ -714,12 +724,23 @@ def _contains_excluded_text(element_or_text) -> bool:
         "theo dõi trên",
         "bình luận của bạn",
         "ban biên tập",
-        "thời gian",
         "số người thích",
         "sponsored",
         "quảng cáo",
     ]
-    return any(keyword in lowered for keyword in excluded_keywords)
+    if any(keyword in lowered for keyword in excluded_keywords):
+        return True
+
+    normalized = lowered.strip()
+    time_prefixes = (
+        "thời gian",
+        "thoi gian",
+    )
+    if any(normalized.startswith(prefix) for prefix in time_prefixes):
+        # Short metadata snippets like "Thời gian: 09:00" should be filtered,
+        # but keep longer editorial sentences that merely mention "thời gian".
+        return len(normalized) <= 60
+    return False
 
 
 def _normalize_whitespace(text: str) -> str:
@@ -751,6 +772,7 @@ _EXCLUDED_SECTION_TOKENS = {
     "banner",
     "sponsor",
     "related",
+    "tinlienquan",
     "share",
     "social",
     "comment",
@@ -797,6 +819,30 @@ def _is_in_excluded_section(element: Tag) -> bool:
             return True
         current = current.parent
     return False
+
+
+def _filter_domain_content(domain: str, segments: List[str]) -> List[str]:
+    normalized_domain = domain.lower()
+    if normalized_domain.endswith("cafebiz.vn"):
+        filtered: List[str] = []
+        for text in segments:
+            normalized = text.strip()
+            lowered = normalized.lower()
+            if not normalized:
+                continue
+            if normalized.startswith("Đáng chú ý") and (len(filtered) >= 3 or "CEO" in normalized or "Tin vui" in normalized or "Vươn Mình" in normalized):
+                break
+            if "lượt xem" in lowered:
+                continue
+            if lowered.startswith("theo "):
+                # Allow real editorial sentences such as "Theo Bộ NN&PTNT, ..."
+                # but skip short credit lines like "Theo VTV" or "Theo CafeBiz".
+                stripped = normalized.rstrip(".: ")
+                if "," not in stripped and len(stripped.split()) <= 8:
+                    continue
+            filtered.append(text)
+        return filtered
+    return segments
 
 
 def _extract_date_from_jsonld(soup: BeautifulSoup) -> Optional[datetime]:
@@ -1264,6 +1310,54 @@ def _extract_kenh14_tags(soup: BeautifulSoup) -> List[str]:
     return collected
 
 
+def _extract_vneconomy_tags(soup: BeautifulSoup) -> List[str]:
+    collected: List[str] = []
+    for container in soup.select("div.box-keyword"):
+        for link in container.select("div.list-tag a.tag"):
+            text = link.get_text(" ", strip=True)
+            text = _normalize_whitespace(text)
+            if text:
+                collected.append(text)
+    return collected
+
+
+def _extract_vietnamnet_tags(soup: BeautifulSoup) -> List[str]:
+    collected: List[str] = []
+    selectors = ["div.tag-cotnent", ".tag-cotnent", "div.tag-content", ".tag-content"]
+    for selector in selectors:
+        containers = soup.select(selector)
+        if not containers:
+            continue
+        for container in containers:
+            # Vietnamnet nests tags inside h3 elements; prefer those to avoid capturing helper text.
+            heading_tags = container.select("h3")
+            if heading_tags:
+                for heading in heading_tags:
+                    text = _normalize_whitespace(heading.get_text(" ", strip=True))
+                    if not text and heading.get("title"):
+                        text = _normalize_whitespace(heading["title"])
+                    if text:
+                        collected.append(text)
+                    else:
+                        link = heading.find("a")
+                        if link:
+                            text = _normalize_whitespace(link.get_text(" ", strip=True))
+                            if not text and link.get("title"):
+                                text = _normalize_whitespace(link["title"])
+                            if text:
+                                collected.append(text)
+            else:
+                for link in container.select("a[href]"):
+                    text = _normalize_whitespace(link.get_text(" ", strip=True))
+                    if not text and link.get("title"):
+                        text = _normalize_whitespace(link["title"])
+                    if text:
+                        collected.append(text)
+        if collected:
+            break
+    return collected
+
+
 def _extract_kenh14_category(_: str, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
     active_tab = soup.select_one("li.kbwsli.active")
     if active_tab:
@@ -1403,6 +1497,48 @@ def _extract_baocamau_category(_: str, soup: BeautifulSoup) -> Tuple[str | None,
     return slug_to_use, category_name
 
 
+def _extract_cafebiz_category(_: str, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
+    link = soup.select_one("span.cat a[href]")
+    if link is None:
+        link = soup.select_one(".cat a[href]")
+
+    if not link:
+        return None, None
+
+    category_name = _normalize_whitespace(link.get_text(" ", strip=True))
+    if not category_name:
+        title_attr = link.get("title")
+        if title_attr and isinstance(title_attr, str):
+            normalized_title = _normalize_whitespace(title_attr)
+            if normalized_title:
+                category_name = normalized_title
+
+    category_id = _slug_from_url(link.get("href"))
+
+    return category_id, category_name
+
+
+def _extract_cafef_category(_: str, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
+    link = soup.select_one("a.category-page__name[data-role='cate-name']")
+    if link is None:
+        link = soup.select_one("a.category-page__name")
+
+    if not link:
+        return None, None
+
+    category_name = _normalize_whitespace(link.get_text(" ", strip=True))
+    if not category_name:
+        title_attr = link.get("title")
+        if title_attr and isinstance(title_attr, str):
+            normalized_title = _normalize_whitespace(title_attr)
+            if normalized_title:
+                category_name = normalized_title
+
+    category_id = _slug_from_url(link.get("href"))
+
+    return category_id, category_name
+
+
 def _extract_baodongkhoi_category(_: str, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
     explicit_id: str | None = None
     category_name: str | None = None
@@ -1445,16 +1581,93 @@ def _extract_giadinh_suckhoedoisong_category(_: str, soup: BeautifulSoup) -> Tup
     return category_id, category_name
 
 
+def _extract_vtv_category(base_url: str, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
+    selectors = [
+        "div.list-cate a[data-role='cate-name']",
+        ".list-cate a[data-role='cate-name']",
+        "div.list-cate a.category-name_ac",
+        ".list-cate a.category-name_ac",
+        ".list-cate a",
+    ]
+    category_links: List[Tag] = []
+    for selector in selectors:
+        category_links = soup.select(selector)
+        if category_links:
+            break
+
+    if not category_links:
+        return None, None
+
+    category_names: List[str] = []
+    category_id: str | None = None
+
+    for link in category_links:
+        text_value = _normalize_whitespace(link.get_text(" ", strip=True))
+        if not text_value and link.get("title"):
+            text_value = _normalize_whitespace(link["title"])
+        if text_value:
+            category_names.append(text_value)
+
+        href = link.get("href")
+        if href:
+            slug = _slug_from_url(urljoin(base_url, href))
+            if slug:
+                category_id = slug
+
+    category_name = " > ".join(category_names) if category_names else None
+    return category_id, category_name
+
+
+def _extract_vietnamnet_category(base_url: str, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
+    breadcrumb = soup.select_one("div.bread-crumb-detail")
+    if breadcrumb is None:
+        breadcrumb = soup.select_one(".bread-crumb-detail")
+
+    if not breadcrumb:
+        return None, None
+
+    category_id: str | None = None
+    category_name: str | None = None
+
+    for link in breadcrumb.select("ul li a[href]"):
+        if link.find("img"):
+            continue
+        href = link.get("href")
+        if not href:
+            continue
+        normalized_href = href.strip()
+        if not normalized_href or normalized_href == "/":
+            continue
+
+        text_value = _normalize_whitespace(link.get_text(" ", strip=True))
+        if not text_value and link.get("title"):
+            text_value = _normalize_whitespace(link["title"])
+        if not text_value:
+            continue
+
+        category_name = text_value
+        category_id = _slug_from_url(urljoin(base_url, href))
+        break
+
+    return category_id, category_name
+
+
 _CATEGORY_EXTRACTORS: dict[str, Callable[[str, BeautifulSoup], Tuple[str | None, str | None]]] = {
     "genk_category": _extract_genk_category,
     "kenh14_category": _extract_kenh14_category,
+    "cafebiz_category": _extract_cafebiz_category,
+    "cafef_category": _extract_cafef_category,
     "baocamau_category": _extract_baocamau_category,
     "baodongkhoi_category": _extract_baodongkhoi_category,
     "giadinh_suckhoedoisong_category": _extract_giadinh_suckhoedoisong_category,
+    "vtv_category": _extract_vtv_category,
+    "vietnamnet_category": _extract_vietnamnet_category,
 }
 
 _TAG_EXTRACTORS: dict[str, Callable[[BeautifulSoup], List[str]]] = {
     "kenh14_tags": _extract_kenh14_tags,
+    "vneconomy_tags": _extract_vneconomy_tags,
+    "vietnamnet_tags": _extract_vietnamnet_tags,
 }
 
 

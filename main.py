@@ -18,6 +18,11 @@ KENH14_SITEMAP_EXCLUDE_PATTERNS = [
     "*kenh14.vn/google-news-sitemap.xml",
     "*kenh14.vn/latestnews-sitemap.xml",
 ]
+CAFEBIZ_SITEMAP_EXCLUDE_PATTERNS = [
+    "*cafebiz.vn/sitemaps/category.rss",
+    "*cafebiz.vn/google-news-sitemap.xml",
+    "*cafebiz.vn/latestnews-sitemap.xml",
+]
 TINNHANHCHUNGKHOAN_SITEMAP_EXCLUDE_PATTERNS = [
     "*tinnhanhchungkhoan.vn/sitemaps/categories.xml",
     "*tinnhanhchungkhoan.vn/sitemaps/topics.xml",
@@ -29,9 +34,19 @@ GIADINH_SUCKHOEDOISONG_SITEMAP_EXCLUDE_PATTERNS = [
     "*giadinh.suckhoedoisong.vn/latestnews-sitemap.xml",
 ]
 
+VNECONOMY_SITEMAP_EXCLUDE_PATTERNS = [
+    "*vneconomy.vn/sitemap/categories.xml",
+    "*vneconomy.vn/sitemap/latest-news.xml",
+    "*vneconomy.vn/sitemap/google-news.xml",
+]
+
+BAODAUTU_SITEMAP_EXCLUDE_PATTERNS = [
+    "*baodautu.vn/sitemaps/categories.xml",
+]
+
 NHANDAN_SITEMAP_EXCLUDE_PATTERNS = [
     "*nhandan.vn/sitemaps/categories.xml",
-    "*nhandan.vn/sitemaps/topics.xml",
+   "*nhandan.vn/sitemaps/topics.xml",
     "*nhandan.vn",
 ]
 
@@ -39,6 +54,56 @@ ANNINHTHUDO_SITEMAP_EXCLUDE_PATTERNS = [
     "*anninhthudo.vn/sitemaps/categories.xml",
     "*anninhthudo.vn/sitemaps/topics.xml",
 ]
+
+DAIBIEUNHANDAN_SITEMAP_EXCLUDE_PATTERNS = [
+    "*daibieunhandan.vn/sitemap-article-daily.xml",
+    "*daibieunhandan.vn/sitemap-news.xml",
+    "*daibieunhandan.vn/sitemap-category.xml",
+    "*daibieunhandan.vn/sitemap-event.xml",
+]
+
+CONGLY_SITEMAP_EXCLUDE_PATTERNS = [
+    "*congly.vn/sitemap-article-daily.xml",
+    "*congly.vn/sitemap-category.xml",
+    "*congly.vn/sitemap-event.xml",
+]
+
+CAFEF_SITEMAP_EXCLUDE_PATTERNS = [
+    "*cafef.vn/sitemaps/category.rss",
+    "*cafef.vn/google-news-sitemap.xml",
+    "*cafef.vn/latest-news-sitemap.xml",
+]
+
+VTV_SITEMAP_EXCLUDE_PATTERNS = [
+    "*vtv.vn/sitemaps/category.rss",
+    "*vtv.vn/google-news-sitemap.xml",
+    "*vtv.vn/latest-news-sitemap.xml",
+]
+
+VIETNAMNET_SITEMAP_EXCLUDE_PATTERNS = [
+    "*vietnamnet.vn/sitemap-categories.xml",
+    "*vietnamnet.vn/sitemap-news.xml",
+    "*vietnamnet.vn/sitemap-image.xml",
+    "*vietnamnet.vn/sitemap-video.xml",
+    "*vietnamnet.vn/sitemap-tags*.xml",
+]
+
+
+DEFAULT_SITEMAP_EXCLUDE_PATTERNS = (
+    GENK_SITEMAP_EXCLUDE_PATTERNS
+    + KENH14_SITEMAP_EXCLUDE_PATTERNS
+    + CAFEBIZ_SITEMAP_EXCLUDE_PATTERNS
+    + GIADINH_SUCKHOEDOISONG_SITEMAP_EXCLUDE_PATTERNS
+    + VNECONOMY_SITEMAP_EXCLUDE_PATTERNS
+    + BAODAUTU_SITEMAP_EXCLUDE_PATTERNS
+    + NHANDAN_SITEMAP_EXCLUDE_PATTERNS
+    + ANNINHTHUDO_SITEMAP_EXCLUDE_PATTERNS
+    + DAIBIEUNHANDAN_SITEMAP_EXCLUDE_PATTERNS
+    + CONGLY_SITEMAP_EXCLUDE_PATTERNS
+    + CAFEF_SITEMAP_EXCLUDE_PATTERNS
+    + VTV_SITEMAP_EXCLUDE_PATTERNS
+    + VIETNAMNET_SITEMAP_EXCLUDE_PATTERNS
+)
 
 
 def configure_logging(verbose: bool) -> None:
@@ -177,13 +242,7 @@ def main() -> None:
         sitemap_urls = read_sitemap_list(Path(args.sitemaps_file))
 
     sitemap_exclude_patterns = list(args.sitemap_exclude or [])
-    for pattern in (
-        GENK_SITEMAP_EXCLUDE_PATTERNS
-        + KENH14_SITEMAP_EXCLUDE_PATTERNS
-        + GIADINH_SUCKHOEDOISONG_SITEMAP_EXCLUDE_PATTERNS
-        + NHANDAN_SITEMAP_EXCLUDE_PATTERNS
-        + ANNINHTHUDO_SITEMAP_EXCLUDE_PATTERNS
-    ):
+    for pattern in DEFAULT_SITEMAP_EXCLUDE_PATTERNS:
         if pattern not in sitemap_exclude_patterns:
             sitemap_exclude_patterns.append(pattern)
 

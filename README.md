@@ -80,4 +80,14 @@ Generate a simple quality report (missing tags, short content) with:
 python quality_check.py --host baohaiphong.vn --content-threshold 400
 ```
 
+## Schema Maintenance
+
+Keep the database schema in sync with the SQLAlchemy models. To widen the `articles.tags` column to 5000 characters run:
+
+```bash
+python -m db.migrations.expand_tags_length --database-url postgresql://user:password@localhost:5432/crawl_db
+```
+
+You can omit `--database-url` if `DATABASE_URL` is set in the environment. Pass `--downgrade` to revert the change if needed.
+
 > The requirements include `psycopg2-binary` for convenience. If you prefer a compiled driver in production, install `psycopg2` with the necessary PostgreSQL build headers instead.

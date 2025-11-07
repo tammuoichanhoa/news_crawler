@@ -9,6 +9,7 @@ class ArticleSiteConfig:
     """Configuration overrides for extracting article details from specific hosts."""
 
     title_selectors: Tuple[str, ...] = ()
+    description_selectors: Tuple[str, ...] = ()
     main_container_selectors: Tuple[str, ...] = ()
     main_container_keywords: Tuple[str, ...] = ()
     category_extractors: Tuple[str, ...] = ()
@@ -49,6 +50,36 @@ ARTICLE_SITE_CONFIG: Dict[str, ArticleSiteConfig] = {
         category_extractors=("kenh14_category",),
         tag_extractors=("kenh14_tags",),
     ),
+    "cafebiz.vn": ArticleSiteConfig(
+        main_container_selectors=(
+            "div.detail-content[data-role='content']",
+        ),
+        main_container_keywords=("detail-content", "content"),
+        category_extractors=("cafebiz_category",),
+    ),
+    "cafef.vn": ArticleSiteConfig(
+        main_container_selectors=(
+            "div#mainContent.detail-cmain",
+            "div.detail-cmain.ss#mainContent",
+            "div.detail-cmain.ss",
+        ),
+        main_container_keywords=("detail-cmain", "maincontent", "detail"),
+        category_extractors=("cafef_category",),
+    ),
+    "vtv.vn": ArticleSiteConfig(
+        category_extractors=("vtv_category",),
+    ),
+    "vietnamnet.vn": ArticleSiteConfig(
+        category_extractors=("vietnamnet_category",),
+        tag_extractors=("vietnamnet_tags",),
+    ),
+    "congly.vn": ArticleSiteConfig(
+        main_container_selectors=(
+            "div.b-maincontent",
+            ".b-maincontent",
+        ),
+        main_container_keywords=("b-maincontent", "maincontent"),
+    ),
     "baocamau.vn": ArticleSiteConfig(
         category_extractors=("baocamau_category",),
     ),
@@ -86,6 +117,55 @@ ARTICLE_SITE_CONFIG: Dict[str, ArticleSiteConfig] = {
             "div.cms-body",
         ),
         main_container_keywords=("article__body", "cms-body", "zce-content-body", "article"),
+    ),
+    "baodautu.vn": ArticleSiteConfig(
+        title_selectors=(
+            "meta[property='dcterms.title']",
+            "meta[name='dcterms.title']",
+            "meta[property='og:title']",
+            "meta[name='og:title']",
+            "meta[name='title']",
+            "h1.detail__title",
+            ".detail__title",
+            ".article__title",
+            ".title-detail",
+            ".title-article",
+            ".detail-title",
+        ),
+        main_container_selectors=(
+            "div.detail__content",
+            "div.detail__content.cms-body",
+            "div.detail__content.content",
+            "div.detail__content.detail-content",
+            "div.detail__content article",
+            "div.article__main",
+            "div.article__body",
+            "article.article__detail",
+            "article.article-detail",
+            "article.detail__body",
+            "div.article__body",
+            "div.article-content",
+            "div.detail-content",
+            "div.cms-body",
+            "section.detail__body",
+            "section.article__body",
+            "article[itemprop='articleBody']",
+        ),
+        main_container_keywords=(
+            "detail__content",
+            "detail-content",
+            "article__body",
+            "article__main",
+            "cms-body",
+            "content",
+            "detail",
+        ),
+    ),
+    "vneconomy.vn": ArticleSiteConfig(
+        tag_extractors=("vneconomy_tags",),
+    ),
+    "nongnghiepmoitruong.vn": ArticleSiteConfig(
+        description_selectors=("h2.main-intro.detail-intro",),
     ),
 }
 
