@@ -88,6 +88,25 @@ VIETNAMNET_SITEMAP_EXCLUDE_PATTERNS = [
     "*vietnamnet.vn/sitemap-tags*.xml",
 ]
 
+SOHA_SITEMAP_EXCLUDE_PATTERNS = [
+    "*soha.vn/sitemaps/category.rss",
+    "*soha.vn/google-news-sitemap.xml",
+    "*soha.vn/latest-news-sitemap.xml",
+]
+
+BAOXAYDUNG_SITEMAP_EXCLUDE_PATTERNS = [
+    "*baoxaydung.vn/sitemap/category.xml",
+    "*baoxaydung.vn/google-news-sitemap.xml",
+    "*baoxaydung.vn/latest-news-sitemap.xml",
+    "*baoxaydung.vn/video-news.xml",
+    "*baoxaydung.vn/event.xml",
+]
+
+BAOPHAPLUAT_SITEMAP_EXCLUDE_PATTERNS = [
+    "*baophapluat.vn/sitemaps/categories.xml",
+    "*baophapluat.vn/sitemaps/latest-articles.xml",
+    "*baophapluat.vn/sitemaps/google-news.xml",
+]
 
 DEFAULT_SITEMAP_EXCLUDE_PATTERNS = (
     GENK_SITEMAP_EXCLUDE_PATTERNS
@@ -103,6 +122,9 @@ DEFAULT_SITEMAP_EXCLUDE_PATTERNS = (
     + CAFEF_SITEMAP_EXCLUDE_PATTERNS
     + VTV_SITEMAP_EXCLUDE_PATTERNS
     + VIETNAMNET_SITEMAP_EXCLUDE_PATTERNS
+    + SOHA_SITEMAP_EXCLUDE_PATTERNS
+    + BAOXAYDUNG_SITEMAP_EXCLUDE_PATTERNS
+    + BAOPHAPLUAT_SITEMAP_EXCLUDE_PATTERNS
 )
 
 

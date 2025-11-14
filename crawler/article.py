@@ -535,6 +535,9 @@ class ArticleExtractor:
         return urljoin(self.base_url, href)
 
 
+MAX_TAG_LENGTH = 500
+
+
 class ArticleCrawler:
     """Fetch article pages and persist them into the database."""
 
@@ -605,13 +608,22 @@ class ArticleCrawler:
             description_value = data.description or data.summary
             if data.summary and len(data.summary) > len(description_value or ""):
                 description_value = data.summary
+            tags_value = _truncate_tag_list(data.tags, MAX_TAG_LENGTH)
+            if data.tags and tags_value != data.tags:
+                logger.debug(
+                    "Truncated tags for %s from %s to %s characters",
+                    data.url,
+                    len(data.tags),
+                    len(tags_value) if tags_value else 0,
+                )
+
             article = Article(
                 title=data.title[:1024],
                 description=description_value,
                 content=data.content,
                 category_id=data.category_id,
                 category_name=data.category_name,
-                tags=data.tags,
+                tags=tags_value,
                 url=data.url,
                 publish_date=data.publish_date,
             )
@@ -743,6 +755,30 @@ def _contains_excluded_text(element_or_text) -> bool:
     return False
 
 
+def _truncate_tag_list(value: str | None, max_length: int) -> str | None:
+    if not value:
+        return None
+    if len(value) <= max_length:
+        return value
+
+    parts = [part.strip() for part in value.split(",") if part.strip()]
+    if not parts:
+        return value[:max_length]
+
+    truncated: List[str] = []
+    current_length = 0
+    for part in parts:
+        addition = len(part) if not truncated else len(part) + 1  # include comma
+        if current_length + addition > max_length:
+            break
+        truncated.append(part)
+        current_length += addition
+
+    if not truncated:
+        return value[:max_length]
+    return ",".join(truncated)
+
+
 def _normalize_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
@@ -772,6 +808,7 @@ _EXCLUDED_SECTION_TOKENS = {
     "banner",
     "sponsor",
     "related",
+    "relate",
     "tinlienquan",
     "share",
     "social",
@@ -1312,12 +1349,23 @@ def _extract_kenh14_tags(soup: BeautifulSoup) -> List[str]:
 
 def _extract_vneconomy_tags(soup: BeautifulSoup) -> List[str]:
     collected: List[str] = []
-    for container in soup.select("div.box-keyword"):
-        for link in container.select("div.list-tag a.tag"):
-            text = link.get_text(" ", strip=True)
+    seen: set[str] = set()
+    containers = soup.select("div.box-keyword div.list-tag")
+    if not containers:
+        containers = soup.select("div.list-tag")
+    for container in containers:
+        for link in container.select("a.tag"):
+            text = None
+            span = link.find("span")
+            if span:
+                text = span.get_text(" ", strip=True)
+            if not text:
+                text = link.get_text(" ", strip=True)
             text = _normalize_whitespace(text)
-            if text:
-                collected.append(text)
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            collected.append(text)
     return collected
 
 
@@ -1581,6 +1629,114 @@ def _extract_giadinh_suckhoedoisong_category(_: str, soup: BeautifulSoup) -> Tup
     return category_id, category_name
 
 
+def _extract_soha_category(_: str, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
+    selectors = [
+        "header a.nav-link.active",
+        "header nav a.nav-link.active",
+        "header .navbar-nav a.nav-link.active",
+        "nav.navbar a.nav-link.active",
+        ".navbar a.nav-link.active",
+        ".nav-main a.nav-link.active",
+        "a.nav-link.active",
+    ]
+
+    active_links: List[Tag] = []
+    for selector in selectors:
+        active_links = soup.select(selector)
+        if active_links:
+            break
+
+    if not active_links:
+        return None, None
+
+    id_attr_candidates = [
+        "data-id",
+        "data-cateid",
+        "data-category-id",
+        "data-category",
+        "data-catid",
+        "data-cate",
+        "data-value",
+    ]
+
+    for link in active_links:
+        category_name = _normalize_whitespace(link.get_text(" ", strip=True))
+        if not category_name:
+            title_attr = link.get("title")
+            if title_attr and isinstance(title_attr, str):
+                category_name = _normalize_whitespace(title_attr)
+
+        category_id: str | None = None
+        for attr in id_attr_candidates:
+            raw_value = link.get(attr)
+            if raw_value and isinstance(raw_value, str):
+                stripped = raw_value.strip()
+                if stripped:
+                    category_id = stripped
+                    break
+        if not category_id:
+            category_id = _slug_from_url(link.get("href"))
+
+        if category_name or category_id:
+            return category_id, category_name
+
+    return None, None
+
+
+def _extract_baodautu_category(base_url: str, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
+    selectors = [
+        "div.fs16.text-uppercase a[href]",
+        ".fs16.text-uppercase a[href]",
+        ".detail-cate a[href]",
+    ]
+
+    for selector in selectors:
+        links = soup.select(selector)
+        if not links:
+            continue
+        for link in links:
+            text_value = _normalize_whitespace(link.get_text(" ", strip=True))
+            if not text_value and link.get("title"):
+                text_value = _normalize_whitespace(str(link["title"]))
+
+            href = link.get("href")
+            category_id = _slug_from_url(urljoin(base_url, href)) if href else None
+
+            if category_id or text_value:
+                return category_id, text_value
+
+    return None, None
+
+
+def _extract_baoxaydung_category(base_url: str, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
+    selectors = [
+        "a.detail-cate-top.category-name_ac[href]",
+        ".detail-cate-top a.category-name_ac[href]",
+        "a.detail-cate-top[href]",
+        ".detail-cate-top a[href]",
+        "a.category-name_ac[href]",
+    ]
+
+    for selector in selectors:
+        links = soup.select(selector)
+        if not links:
+            continue
+        for link in links:
+            text_value = _normalize_whitespace(link.get_text(" ", strip=True))
+            if not text_value and link.get("title"):
+                title_text = _normalize_whitespace(link["title"])
+                if title_text:
+                    text_value = title_text
+
+            href = link.get("href")
+            category_id = _slug_from_url(urljoin(base_url, href)) if href else None
+
+            if category_id or text_value:
+                return category_id, text_value
+
+    return None, None
+
+
 def _extract_vtv_category(base_url: str, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
     selectors = [
         "div.list-cate a[data-role='cate-name']",
@@ -1659,7 +1815,10 @@ _CATEGORY_EXTRACTORS: dict[str, Callable[[str, BeautifulSoup], Tuple[str | None,
     "cafef_category": _extract_cafef_category,
     "baocamau_category": _extract_baocamau_category,
     "baodongkhoi_category": _extract_baodongkhoi_category,
+    "baodautu_category": _extract_baodautu_category,
+    "baoxaydung_category": _extract_baoxaydung_category,
     "giadinh_suckhoedoisong_category": _extract_giadinh_suckhoedoisong_category,
+    "soha_category": _extract_soha_category,
     "vtv_category": _extract_vtv_category,
     "vietnamnet_category": _extract_vietnamnet_category,
 }

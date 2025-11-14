@@ -73,6 +73,14 @@ ARTICLE_SITE_CONFIG: Dict[str, ArticleSiteConfig] = {
         category_extractors=("vietnamnet_category",),
         tag_extractors=("vietnamnet_tags",),
     ),
+    "vietnamplus.vn": ArticleSiteConfig(
+        main_container_selectors=(
+            "div.article__body.zce-content-body.cms-body[itemprop='articleBody']",
+            "div.article__body.zce-content-body.cms-body",
+            "div.article__body",
+        ),
+        main_container_keywords=("article__body", "cms-body"),
+    ),
     "congly.vn": ArticleSiteConfig(
         main_container_selectors=(
             "div.b-maincontent",
@@ -102,6 +110,15 @@ ARTICLE_SITE_CONFIG: Dict[str, ArticleSiteConfig] = {
         main_container_keywords=("detail-content", "afcbc-body", "content"),
         category_extractors=("giadinh_suckhoedoisong_category",),
     ),
+    "soha.vn": ArticleSiteConfig(
+        main_container_selectors=(
+            "div.detail-content.afcbc-body[data-role='content']",
+            "div.detail-content[data-role='content']",
+            "div.detail__content-page div.detail-content",
+        ),
+        main_container_keywords=("detail-content", "afcbc-body", "content"),
+        category_extractors=("soha_category",),
+    ),
     "nhandan.vn": ArticleSiteConfig(
         main_container_selectors=(
             "div.article__body",
@@ -118,6 +135,17 @@ ARTICLE_SITE_CONFIG: Dict[str, ArticleSiteConfig] = {
         ),
         main_container_keywords=("article__body", "cms-body", "zce-content-body", "article"),
     ),
+    "baolaocai.vn": ArticleSiteConfig(
+        main_container_selectors=(
+            "div[data-field='body']",
+            "div.article__body.zce-content-body.cms-body[itemprop='articleBody']",
+            "div.article__body.zce-content-body.cms-body",
+            "div.article__body.cms-body",
+            "div.article__body",
+        ),
+        main_container_keywords=("article__body", "cms-body", "zce-content-body", "article"),
+        tag_extractors=("vneconomy_tags",),
+    ),
     "baodautu.vn": ArticleSiteConfig(
         title_selectors=(
             "meta[property='dcterms.title']",
@@ -133,6 +161,8 @@ ARTICLE_SITE_CONFIG: Dict[str, ArticleSiteConfig] = {
             ".detail-title",
         ),
         main_container_selectors=(
+            "#content_detail_news",
+            "div#content_detail_news",
             "div.detail__content",
             "div.detail__content.cms-body",
             "div.detail__content.content",
@@ -160,8 +190,22 @@ ARTICLE_SITE_CONFIG: Dict[str, ArticleSiteConfig] = {
             "content",
             "detail",
         ),
+        category_extractors=("baodautu_category",),
+    ),
+    "baoxaydung.vn": ArticleSiteConfig(
+        category_extractors=("baoxaydung_category",),
     ),
     "vneconomy.vn": ArticleSiteConfig(
+        description_selectors=(
+            "div.news-sapo",
+            "[data-field='sapo']",
+        ),
+        main_container_selectors=(
+            "div[data-field='body']",
+            "div.article__body",
+            "div[itemprop='articleBody']",
+        ),
+        main_container_keywords=("article__body", "article", "body"),
         tag_extractors=("vneconomy_tags",),
     ),
     "nongnghiepmoitruong.vn": ArticleSiteConfig(

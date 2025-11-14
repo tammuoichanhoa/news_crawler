@@ -6,8 +6,9 @@ import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from fnmatch import fnmatch
+from html.parser import HTMLParser
 from typing import Iterable, List, Sequence, Set
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import requests
 
@@ -74,6 +75,9 @@ class SitemapCrawler:
         try:
             root = ET.fromstring(raw_content)
         except ET.ParseError as exc:
+            fallback_entries = self._parse_non_xml_sitemap(sitemap_url, raw_content)
+            if fallback_entries is not None:
+                return fallback_entries
             logger.error("Failed to parse sitemap %s: %s", sitemap_url, exc)
             return []
 
@@ -182,3 +186,48 @@ class SitemapCrawler:
         if last_exc:
             raise last_exc
         raise RuntimeError(f"Failed to fetch {url} after {max_attempts} attempts")
+
+    def _parse_non_xml_sitemap(self, sitemap_url: str, content: bytes) -> List[SitemapEntry] | None:
+        """
+        Handle hosts that publish sitemap listings as HTML pages instead of XML (e.g. baophapluat.vn).
+        """
+        host = urlparse(sitemap_url).netloc.lower()
+        if not host.endswith("baophapluat.vn"):
+            return None
+
+        parser = _AnchorExtractor()
+        try:
+            parser.feed(content.decode("utf-8", errors="ignore"))
+        except Exception as exc:  # pragma: no cover
+            logger.error("Failed to parse HTML sitemap %s: %s", sitemap_url, exc)
+            return []
+        parser.close()
+
+        entries: List[SitemapEntry] = []
+        for href in parser.links:
+            article_url = urljoin(sitemap_url, href)
+            if not self._allowed_url(article_url):
+                continue
+            entries.append(
+                SitemapEntry(
+                    url=article_url,
+                    article_id=extract_article_id(article_url),
+                )
+            )
+        return entries
+
+
+class _AnchorExtractor(HTMLParser):
+    """Lightweight link extractor for HTML-based sitemap listings."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.links: List[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() != "a":
+            return
+        for attr, value in attrs:
+            if attr.lower() == "href" and value:
+                self.links.append(value.strip())
+                break

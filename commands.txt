@@ -28,3 +28,10 @@ python main.py --slug www_sggp_org_vn --sitemap-exclude '*categories*' --sitemap
 python main.py --database-url postgresql://crawl:crawl@localhost:5432/genk --slug genk_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*' --skip-article-ingest
 python main.py --database-url postgresql://crawl:crawl@localhost:5432/kenh14 --slug kenh14_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*' --skip-article-ingest
 python main.py --database-url postgresql://crawl:crawl@localhost:5432/mattran --slug mattran_org_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*' --skip-article-ingest
+
+
+
+
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baolaocai --skip-url-collection --slug baolaocai_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*
+
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baolaocai --skip-url-collection --slug baolaocai_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*
