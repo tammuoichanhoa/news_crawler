@@ -35,3 +35,7 @@ python main.py --database-url postgresql://crawl:crawl@localhost:5432/mattran --
 python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baolaocai --skip-url-collection --slug baolaocai_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*
 
 python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baolaocai --skip-url-collection --slug baolaocai_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*
+
+
+
+python3 main.py --skip-url-collection --slug soha_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*

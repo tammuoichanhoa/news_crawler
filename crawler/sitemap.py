@@ -2,6 +2,7 @@ import gzip
 import io
 import logging
 import random
+import ssl
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -11,12 +12,33 @@ from typing import Iterable, List, Sequence, Set
 from urllib.parse import urlparse, urljoin
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from .throttle import RequestThrottler
 from .utils import extract_article_id
 
 
 logger = logging.getLogger(__name__)
+LEGACY_SSL_HOSTS = {"bnews.vn"}
+
+
+class _LegacySSLAdapter(HTTPAdapter):
+    """HTTP adapter that enables legacy TLS renegotiation support."""
+
+    def __init__(self) -> None:
+        self.ssl_context = ssl.create_default_context()
+        option = getattr(ssl, "OP_LEGACY_SERVER_CONNECT", None)
+        if option:
+            self.ssl_context.options |= option
+        super().__init__()
+
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs["ssl_context"] = self.ssl_context
+        return super().init_poolmanager(*args, **kwargs)
+
+    def proxy_manager_for(self, *args, **kwargs):
+        kwargs["ssl_context"] = self.ssl_context
+        return super().proxy_manager_for(*args, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -60,6 +82,7 @@ class SitemapCrawler:
 
         if user_agent:
             self.session.headers["User-Agent"] = user_agent
+        self._configure_legacy_ssl_hosts()
 
     def fetch_urls(self, sitemap_url: str) -> List[SitemapEntry]:
         """Fetch sitemap (or sitemap index) and return structured article entries."""
@@ -97,6 +120,10 @@ class SitemapCrawler:
                 if loc is None or not loc.text:
                     continue
                 loc_text = loc.text.strip()
+                if self._looks_like_child_sitemap(sitemap_url, loc_text):
+                    if self._allowed_child_sitemap(loc_text):
+                        entries.extend(self.fetch_urls(loc_text))
+                    continue
                 if not self._allowed_url(loc_text):
                     continue
                 lastmod_element = url.find(f"{namespace}lastmod" if namespace else "lastmod")
@@ -109,6 +136,23 @@ class SitemapCrawler:
                     )
                 )
         return entries
+
+    def _configure_legacy_ssl_hosts(self) -> None:
+        if not LEGACY_SSL_HOSTS:
+            return
+
+        adapter = _LegacySSLAdapter()
+        for host in LEGACY_SSL_HOSTS:
+            if not host:
+                continue
+            normalized = host.strip()
+            if not normalized:
+                continue
+            if normalized.startswith("http://") or normalized.startswith("https://"):
+                prefix = normalized.rstrip("/") + "/"
+            else:
+                prefix = f"https://{normalized.rstrip('/')}/"
+            self.session.mount(prefix, adapter)
 
     def _maybe_decompress(
         self, response: requests.Response, source_url: str
@@ -151,6 +195,36 @@ class SitemapCrawler:
         if not self.url_patterns:
             return True
         return any(fnmatch(url, pattern) for pattern in self.url_patterns)
+
+    def _looks_like_child_sitemap(self, parent_url: str, candidate_url: str) -> bool:
+        """Detect sitemap indexes that embed child sitemap URLs inside <urlset> entries."""
+        try:
+            parent_host = urlparse(parent_url).netloc.lower()
+        except Exception:  # pragma: no cover - defensive guard
+            parent_host = ""
+
+        parsed = urlparse(candidate_url)
+        candidate_host = parsed.netloc.lower()
+
+        if parent_host and candidate_host and parent_host != candidate_host:
+            return False
+
+        path = parsed.path.lower()
+        if not path:
+            return False
+
+        if path.startswith("/sitemaps/") or path.startswith("/sitemap/"):
+            return True
+
+        filename = path.rsplit("/", 1)[-1]
+        if not filename:
+            return False
+
+        if filename.startswith("sitemap") and (
+            filename.endswith(".xml") or filename.endswith(".xml.gz") or filename.endswith(".txt")
+        ):
+            return True
+        return False
 
     def _allowed_child_sitemap(self, url: str) -> bool:
         if self.exclude_patterns and any(fnmatch(url, pattern) for pattern in self.exclude_patterns):

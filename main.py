@@ -108,6 +108,14 @@ BAOPHAPLUAT_SITEMAP_EXCLUDE_PATTERNS = [
     "*baophapluat.vn/sitemaps/google-news.xml",
 ]
 
+BNEWS_SITEMAP_EXCLUDE_PATTERNS = [
+    "*://bnews.vn",
+    "*://bnews.vn/",
+    "*://bnews.vn/photo/trang-1.html",
+    "*://bnews.vn/video/trang-1.html",
+    "*://bnews.vn/sitemap/categories.xml",
+]
+
 DEFAULT_SITEMAP_EXCLUDE_PATTERNS = (
     GENK_SITEMAP_EXCLUDE_PATTERNS
     + KENH14_SITEMAP_EXCLUDE_PATTERNS
@@ -125,6 +133,7 @@ DEFAULT_SITEMAP_EXCLUDE_PATTERNS = (
     + SOHA_SITEMAP_EXCLUDE_PATTERNS
     + BAOXAYDUNG_SITEMAP_EXCLUDE_PATTERNS
     + BAOPHAPLUAT_SITEMAP_EXCLUDE_PATTERNS
+    + BNEWS_SITEMAP_EXCLUDE_PATTERNS
 )
 
 

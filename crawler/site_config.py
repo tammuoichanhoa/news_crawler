@@ -14,6 +14,7 @@ class ArticleSiteConfig:
     main_container_keywords: Tuple[str, ...] = ()
     category_extractors: Tuple[str, ...] = ()
     tag_extractors: Tuple[str, ...] = ()
+    inline_media_only: bool = False
 
 
 ARTICLE_SITE_CONFIG: Dict[str, ArticleSiteConfig] = {
@@ -117,7 +118,7 @@ ARTICLE_SITE_CONFIG: Dict[str, ArticleSiteConfig] = {
             "div.detail__content-page div.detail-content",
         ),
         main_container_keywords=("detail-content", "afcbc-body", "content"),
-        category_extractors=("soha_category",),
+        category_extractors=("giadinh_suckhoedoisong_category", "soha_category"),
     ),
     "nhandan.vn": ArticleSiteConfig(
         main_container_selectors=(
@@ -192,6 +193,22 @@ ARTICLE_SITE_CONFIG: Dict[str, ArticleSiteConfig] = {
         ),
         category_extractors=("baodautu_category",),
     ),
+    "bnews.vn": ArticleSiteConfig(
+        main_container_selectors=(
+            "div.article__body div.article__content",
+            "div.article__content",
+            "div.article-detail__content",
+            "div.article-content",
+            "div.detail-content",
+            "div.article__body",
+            "section.article__body",
+        ),
+        main_container_keywords=("article__body", "article__content", "article-content", "detail-content"),
+        inline_media_only=True,
+    ),
+    "baophapluat.vn": ArticleSiteConfig(
+        category_extractors=("baophapluat_category",),
+    ),
     "baoxaydung.vn": ArticleSiteConfig(
         category_extractors=("baoxaydung_category",),
     ),
@@ -199,6 +216,10 @@ ARTICLE_SITE_CONFIG: Dict[str, ArticleSiteConfig] = {
         description_selectors=(
             "div.news-sapo",
             "[data-field='sapo']",
+            "div.news-sapo[data-field='sapo'] p",
+            "div.news-sapo p",
+            "[data-field='sapo'] p",
+            "div.news-sapo[data-field='sapo'] p b",
         ),
         main_container_selectors=(
             "div[data-field='body']",

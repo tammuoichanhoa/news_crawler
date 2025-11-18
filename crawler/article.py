@@ -16,7 +16,7 @@ from dateutil import parser as date_parser
 
 from db.models import Article, ArticleImage, ArticleVideo
 from .site_config import ArticleSiteConfig, get_article_site_config
-from .sitemap import SitemapEntry
+from .sitemap import SitemapEntry, LEGACY_SSL_HOSTS, _LegacySSLAdapter
 from .throttle import RequestThrottler
 from .utils import parse_w3c_datetime
 
@@ -57,6 +57,8 @@ class ArticleExtractor:
         data.title = self._extract_title(soup)
         data.description = self._extract_description(soup)
         data.summary = self._extract_summary(soup)
+        # logger.info("Extracted description: %s", data.description)
+        # logger.info("Extracted summary: %s", data.summary)
 
         main_container = self._find_main_container(soup)
 
@@ -68,12 +70,18 @@ class ArticleExtractor:
         data.last_modified = self._extract_last_modified(soup)
         data.author = self._extract_author(soup)
 
-        data.images = self._extract_media_urls(
-            soup,
-            ["meta[property='og:image']", "meta[name='og:image']"],
-            "content",
-            skip_predicate=_should_skip_image_url,
-        )
+        restrict_media_to_body = bool(self.site_config and self.site_config.inline_media_only)
+
+        if restrict_media_to_body:
+            data.images = []
+        else:
+            data.images = self._extract_media_urls(
+                soup,
+                ["meta[property='og:image']", "meta[name='og:image']"],
+                "content",
+                skip_predicate=_should_skip_image_url,
+            )
+
         data.images.extend(self._extract_inline_images(soup, main_container))
         data.images = _deduplicate_preserve_order(data.images)
 
@@ -112,10 +120,13 @@ class ArticleExtractor:
             "meta[name='description']",
             "meta[property='og:description']",
             "p.summary",
+            ".news-sapo p b",
         ]
         description = _first_text(soup, selectors)
+        # logger.info("description %s", description)
         if description:
             return description
+        # logger.info("siteconfig %s", self.site_config)
         if self.site_config and self.site_config.description_selectors:
             return _first_text(soup, self.site_config.description_selectors)
         return None
@@ -129,12 +140,14 @@ class ArticleExtractor:
             "[itemprop='description']",
             ".article-sapo",
             ".article-summary",
+            ".news-sapo p b"
         ]
         for selector in selectors:
             element = soup.select_one(selector)
             if not element:
                 continue
             text = element.get_text(" ", strip=True)
+            # print(text)
             text = _normalize_whitespace(text)
             if text:
                 return text
@@ -475,6 +488,8 @@ class ArticleExtractor:
             image_tags = soup.select("article img, div[class*='article'] img, div[class*='content'] img")
 
         for img in image_tags:
+            if _is_in_excluded_section(img):
+                continue
             for candidate in _collect_image_candidates(img):
                 resolved = self._absolutize(candidate)
                 if _should_skip_image_url(resolved):
@@ -488,6 +503,8 @@ class ArticleExtractor:
             source_tags = soup.select("picture source, source[type*='image']")
 
         for source_tag in source_tags:
+            if _is_in_excluded_section(source_tag):
+                continue
             for candidate in _collect_image_candidates(source_tag):
                 resolved = self._absolutize(candidate)
                 if _should_skip_image_url(resolved):
@@ -495,6 +512,8 @@ class ArticleExtractor:
                 urls.append(resolved)
 
         for element in search_space.select("[style*='background']"):
+            if _is_in_excluded_section(element):
+                continue
             for candidate in _extract_urls_from_style(element.get("style", "")):
                 resolved = self._absolutize(candidate)
                 if _should_skip_image_url(resolved):
@@ -559,6 +578,7 @@ class ArticleCrawler:
 
         if user_agent:
             self.http.headers["User-Agent"] = user_agent
+        self._configure_legacy_ssl_hosts()
 
     def crawl(self, entry: SitemapEntry | str) -> bool:
         if isinstance(entry, SitemapEntry):
@@ -591,6 +611,22 @@ class ArticleCrawler:
             sitemap_lastmod=sitemap_lastmod,
             sitemap_article_id=sitemap_article_id,
         )
+
+    def _configure_legacy_ssl_hosts(self) -> None:
+        if not LEGACY_SSL_HOSTS:
+            return
+        adapter = _LegacySSLAdapter()
+        for host in LEGACY_SSL_HOSTS:
+            if not host:
+                continue
+            normalized = host.strip()
+            if not normalized:
+                continue
+            if normalized.startswith("http://") or normalized.startswith("https://"):
+                prefix = normalized.rstrip("/") + "/"
+            else:
+                prefix = f"https://{normalized.rstrip('/')}/"
+            self.http.mount(prefix, adapter)
 
     def _persist(
         self,
@@ -681,6 +717,7 @@ class ArticleCrawler:
 def _first_text(soup: BeautifulSoup, selectors: Sequence[str]) -> str | None:
     for selector in selectors:
         element = soup.select_one(selector)
+        # logger.info("element %s", element)
         if element:
             if element.name == "meta":
                 content = element.get("content")
@@ -1708,6 +1745,36 @@ def _extract_baodautu_category(base_url: str, soup: BeautifulSoup) -> Tuple[str 
     return None, None
 
 
+def _extract_baophapluat_category(base_url: str, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
+    breadcrumb = soup.select_one("section.breadcrumbs .grow")
+    if breadcrumb is None:
+        breadcrumb = soup.select_one("section.breadcrumbs")
+    if breadcrumb is None:
+        return None, None
+
+    links = [link for link in breadcrumb.select("a[href]") if link.get("href")]
+    if not links:
+        return None, None
+
+    category_names: List[str] = []
+    category_id: str | None = None
+
+    for link in links:
+        text_value = _normalize_whitespace(link.get_text(" ", strip=True))
+        if not text_value and link.get("title"):
+            text_value = _normalize_whitespace(str(link["title"]))
+        if text_value:
+            category_names.append(text_value)
+
+        href = link.get("href")
+        slug = _slug_from_url(urljoin(base_url, href)) if href else None
+        if slug:
+            category_id = slug
+
+    category_name = " > ".join(category_names) if category_names else None
+    return category_id, category_name
+
+
 def _extract_baoxaydung_category(base_url: str, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
     selectors = [
         "a.detail-cate-top.category-name_ac[href]",
@@ -1816,6 +1883,7 @@ _CATEGORY_EXTRACTORS: dict[str, Callable[[str, BeautifulSoup], Tuple[str | None,
     "baocamau_category": _extract_baocamau_category,
     "baodongkhoi_category": _extract_baodongkhoi_category,
     "baodautu_category": _extract_baodautu_category,
+    "baophapluat_category": _extract_baophapluat_category,
     "baoxaydung_category": _extract_baoxaydung_category,
     "giadinh_suckhoedoisong_category": _extract_giadinh_suckhoedoisong_category,
     "soha_category": _extract_soha_category,

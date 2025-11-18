@@ -23,12 +23,11 @@ https://www.vietnamplus.vn/sitemap.xml
 https://baoxaydung.vn/sitemap.xml
 https://baodautu.vn/sitemap.xml
 
+https://soha.vn/sitemap.xml
 https://vneconomy.vn/sitemap.xml
-https://soha.vn/sitemap.xml 
-
 https://baophapluat.vn/sitemaps.xml
-https://bnews.vn/sitemap.xml
 
+https://bnews.vn/sitemap.xml
 
 congly_excluded_sitemap
 <sitemap>
