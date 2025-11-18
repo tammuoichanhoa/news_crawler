@@ -26,6 +26,7 @@ https://baodautu.vn/sitemap.xml
 https://soha.vn/sitemap.xml
 https://vneconomy.vn/sitemap.xml
 https://baophapluat.vn/sitemaps.xml
+https://baodongnai.com.vn/sitemap.xml
 
 https://bnews.vn/sitemap.xml
 

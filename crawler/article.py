@@ -61,6 +61,7 @@ class ArticleExtractor:
         # logger.info("Extracted summary: %s", data.summary)
 
         main_container = self._find_main_container(soup)
+        main_container = self._prune_main_container(main_container)
 
         data.content_html = self._extract_content_html(main_container)
         data.content = self._extract_content(soup, main_container)
@@ -85,7 +86,12 @@ class ArticleExtractor:
         data.images.extend(self._extract_inline_images(soup, main_container))
         data.images = _deduplicate_preserve_order(data.images)
 
-        data.videos = self._extract_media_urls(soup, ["meta[property='og:video']"], "content")
+        data.videos = self._extract_media_urls(
+            soup,
+            ["meta[property='og:video']"],
+            "content",
+            skip_predicate=_should_skip_video_candidate,
+        )
         data.videos.extend(self._extract_inline_videos(soup, main_container))
         data.videos = _deduplicate_preserve_order(data.videos)
 
@@ -125,10 +131,12 @@ class ArticleExtractor:
         description = _first_text(soup, selectors)
         # logger.info("description %s", description)
         if description:
-            return description
+            return _clean_description_text(description)
         # logger.info("siteconfig %s", self.site_config)
         if self.site_config and self.site_config.description_selectors:
-            return _first_text(soup, self.site_config.description_selectors)
+            description = _first_text(soup, self.site_config.description_selectors)
+            if description:
+                return _clean_description_text(description)
         return None
 
     def _extract_summary(self, soup: BeautifulSoup) -> str | None:
@@ -269,6 +277,18 @@ class ArticleExtractor:
                 return candidate
 
         return None
+
+    def _prune_main_container(self, container: Tag | None) -> Tag | None:
+        if not container or not self.site_config:
+            return container
+        selectors = self.site_config.excluded_section_selectors
+        if not selectors:
+            return container
+
+        for selector in selectors:
+            for element in container.select(selector):
+                element.decompose()
+        return container
 
     def _extract_category(self, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
         category_meta = soup.select_one("meta[property='article:section'], meta[name='article:section']")
@@ -479,47 +499,66 @@ class ArticleExtractor:
 
     def _extract_inline_images(self, soup: BeautifulSoup, container: Tag | None = None) -> List[str]:
         urls: List[str] = []
-        search_space = container if container is not None else soup
+        scopes = self._resolve_inline_image_scopes(soup, container)
 
-        image_tags: Sequence[Tag]
-        if container is not None:
-            image_tags = container.find_all("img")
-        else:
-            image_tags = soup.select("article img, div[class*='article'] img, div[class*='content'] img")
+        for scope in scopes:
+            if container is None and scope is soup:
+                image_tags = soup.select(
+                    "article img, div[class*='article'] img, div[class*='content'] img"
+                )
+            else:
+                image_tags = scope.find_all("img")
 
-        for img in image_tags:
-            if _is_in_excluded_section(img):
-                continue
-            for candidate in _collect_image_candidates(img):
-                resolved = self._absolutize(candidate)
-                if _should_skip_image_url(resolved):
+            for img in image_tags:
+                if _is_in_excluded_section(img):
                     continue
-                urls.append(resolved)
+                for candidate in _collect_image_candidates(img):
+                    resolved = self._absolutize(candidate)
+                    if _should_skip_image_url(resolved):
+                        continue
+                    urls.append(resolved)
 
-        source_tags: Sequence[Tag]
-        if container is not None:
-            source_tags = container.find_all("source")
-        else:
-            source_tags = soup.select("picture source, source[type*='image']")
+        for scope in scopes:
+            if container is None and scope is soup:
+                source_tags = soup.select("picture source, source[type*='image']")
+            else:
+                source_tags = scope.find_all("source")
 
-        for source_tag in source_tags:
-            if _is_in_excluded_section(source_tag):
-                continue
-            for candidate in _collect_image_candidates(source_tag):
-                resolved = self._absolutize(candidate)
-                if _should_skip_image_url(resolved):
+            for source_tag in source_tags:
+                if _is_in_excluded_section(source_tag):
                     continue
-                urls.append(resolved)
+                for candidate in _collect_image_candidates(source_tag):
+                    resolved = self._absolutize(candidate)
+                    if _should_skip_image_url(resolved):
+                        continue
+                    urls.append(resolved)
 
-        for element in search_space.select("[style*='background']"):
-            if _is_in_excluded_section(element):
-                continue
-            for candidate in _extract_urls_from_style(element.get("style", "")):
-                resolved = self._absolutize(candidate)
-                if _should_skip_image_url(resolved):
+        for scope in scopes:
+            for element in scope.select("[style*='background']"):
+                if _is_in_excluded_section(element):
                     continue
-                urls.append(resolved)
+                for candidate in _extract_urls_from_style(element.get("style", "")):
+                    resolved = self._absolutize(candidate)
+                    if _should_skip_image_url(resolved):
+                        continue
+                    urls.append(resolved)
         return urls
+
+    def _resolve_inline_image_scopes(self, soup: BeautifulSoup, container: Tag | None) -> List[Tag]:
+        if container is None:
+            return [soup]
+        if not self.site_config:
+            return [container]
+        selectors = self.site_config.inline_image_container_selectors
+        if not selectors:
+            return [container]
+
+        scopes: List[Tag] = []
+        for selector in selectors:
+            scopes.extend(container.select(selector))
+        if not scopes:
+            return [container]
+        return scopes
 
     def _extract_inline_videos(self, soup: BeautifulSoup, container: Tag | None = None) -> List[str]:
         urls: List[str] = []
@@ -728,6 +767,26 @@ def _first_text(soup: BeautifulSoup, selectors: Sequence[str]) -> str | None:
                 if text:
                     return text
     return None
+
+
+_PARAGRAPH_WRAP_RE = re.compile(r"^<p\b[^>]*>(?P<inner>.*)</p>$", re.IGNORECASE | re.DOTALL)
+
+
+def _clean_description_text(text: str) -> str | None:
+    cleaned = _strip_wrapping_paragraph_tags(text)
+    cleaned = cleaned.strip()
+    return cleaned or None
+
+
+def _strip_wrapping_paragraph_tags(value: str) -> str:
+    trimmed = value.strip()
+    if not trimmed:
+        return trimmed
+    match = _PARAGRAPH_WRAP_RE.match(trimmed)
+    if match:
+        inner = match.group("inner")
+        return inner.strip()
+    return value
 
 
 def _join_paragraphs(elements: Iterable) -> str | None:
@@ -1061,12 +1120,27 @@ def _should_skip_image_url(url: str) -> bool:
     filename = posixpath.basename(parsed.path).lower()
     if filename and any(keyword in filename for keyword in _IMAGE_PLACEHOLDER_KEYWORDS):
         return True
+    extension = posixpath.splitext(parsed.path)[1].lower()
+    if not extension or extension not in _ALLOWED_IMAGE_EXTENSIONS:
+        return True
     if not filename and not parsed.netloc:
         return True
     return False
 
 
 _URL_IN_TEXT_RE = re.compile(r"https?://[^\s'\"<>]+|//[^\s'\"<>]+")
+_ALLOWED_IMAGE_EXTENSIONS = (
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".webd",
+    ".gif",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".avif",
+)
 _VIDEO_EXTENSIONS = (
     ".mp4",
     ".m3u8",
@@ -1645,6 +1719,24 @@ def _extract_baodongkhoi_category(_: str, soup: BeautifulSoup) -> Tuple[str | No
     return explicit_id, category_name
 
 
+def _extract_baodongnai_category(base_url: str, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
+    selectors = (
+        "div.breadcrumb a.title.fleft[href]",
+        ".bread-crumb a.title.fleft[href]",
+        "a.title.fleft[href]",
+    )
+    for selector in selectors:
+        link = soup.select_one(selector)
+        if not link:
+            continue
+        text_value = _normalize_whitespace(link.get_text(" ", strip=True))
+        href = link.get("href")
+        category_id = _slug_from_url(urljoin(base_url, href)) if href else None
+        if text_value or category_id:
+            return category_id, text_value or None
+    return None, None
+
+
 def _extract_giadinh_suckhoedoisong_category(_: str, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
     category_link = soup.select_one("a.category-page__name[data-role='cate-name']")
     if category_link is None:
@@ -1882,6 +1974,7 @@ _CATEGORY_EXTRACTORS: dict[str, Callable[[str, BeautifulSoup], Tuple[str | None,
     "cafef_category": _extract_cafef_category,
     "baocamau_category": _extract_baocamau_category,
     "baodongkhoi_category": _extract_baodongkhoi_category,
+    "baodongnai_category": _extract_baodongnai_category,
     "baodautu_category": _extract_baodautu_category,
     "baophapluat_category": _extract_baophapluat_category,
     "baoxaydung_category": _extract_baoxaydung_category,

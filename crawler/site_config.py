@@ -12,6 +12,8 @@ class ArticleSiteConfig:
     description_selectors: Tuple[str, ...] = ()
     main_container_selectors: Tuple[str, ...] = ()
     main_container_keywords: Tuple[str, ...] = ()
+    excluded_section_selectors: Tuple[str, ...] = ()
+    inline_image_container_selectors: Tuple[str, ...] = ()
     category_extractors: Tuple[str, ...] = ()
     tag_extractors: Tuple[str, ...] = ()
     inline_media_only: bool = False
@@ -94,6 +96,20 @@ ARTICLE_SITE_CONFIG: Dict[str, ArticleSiteConfig] = {
     ),
     "baodongkhoi.vn": ArticleSiteConfig(
         category_extractors=("baodongkhoi_category",),
+    ),
+    "baodongnai.com.vn": ArticleSiteConfig(
+        description_selectors=(
+            "div#content.content-detail .td-post-content > p",
+            "div#content.content-detail p",
+        ),
+        main_container_selectors=(
+            "div#content.content-detail",
+            "div#content.content-detail .td-post-content",
+            "div.content-detail .td-post-content",
+        ),
+        main_container_keywords=("content-detail", "td-post-content", "content"),
+        category_extractors=("baodongnai_category",),
+        inline_media_only=True,
     ),
     "nguoiquansat.vn": ArticleSiteConfig(
         main_container_selectors=(
@@ -202,8 +218,23 @@ ARTICLE_SITE_CONFIG: Dict[str, ArticleSiteConfig] = {
             "div.detail-content",
             "div.article__body",
             "section.article__body",
+            "div[itemprop='articleBody']",
+            "article[itemprop='articleBody']",
         ),
         main_container_keywords=("article__body", "article__content", "article-content", "detail-content"),
+        excluded_section_selectors=(
+            ".article__related",
+            ".article__box--related",
+            ".article-related",
+            ".article__other",
+            ".article__list--related",
+            "[class*='tin-lien']",
+            "[class*='tin_lien']",
+            "[class*='tinlienquan']",
+        ),
+        inline_image_container_selectors=(
+            ".post-mid-entry",
+        ),
         inline_media_only=True,
     ),
     "baophapluat.vn": ArticleSiteConfig(
