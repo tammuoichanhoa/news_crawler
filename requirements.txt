@@ -1,0 +1,8 @@
+beautifulsoup4>=4.12
+requests>=2.31
+SQLAlchemy>=2.0
+psycopg2-binary>=2.9
+uuid-utils>=0.8
+python-dotenv>=1.0
+selenium>=4.20
+playwright>=1.41
