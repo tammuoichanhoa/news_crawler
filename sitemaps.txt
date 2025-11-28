@@ -1,8 +1,6 @@
-<<<<<<< HEAD
 https://baocantho.com.vn/sitemapnews.xml
 https://bbk.baothainguyen.vn/sitemap.xml
 https://baodongkhoi.vn/sitemap.xml
 https://baocamau.vn/sitemap.xml
-=======
->>>>>>> 47c7fd5b5b91bc592020e6cc85997b1f8d0ac138
 https://baolongan.vn/sitemap.xml
+https://apife.baobinhduong.vn/sitemap.xml

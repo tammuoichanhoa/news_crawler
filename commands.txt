@@ -18,3 +18,7 @@ python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baodongkh
 python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baothainguyen --allowed-extension .html --slug bbk_baothainguyen_vn --skip-article-ingest
 python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baocamau --allowed-extension .html --slug baocamau_vn --skip-article-ingest
 python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baocantho --allowed-extension .html --slug baocantho_com_vn --skip-article-ingest
+
+
+
+python3 main.py -database-url postgresql://crawl:crawl@localhost:5432/baobinhduong --slug apife_baobinhduong_vn --allowed-extension .html --skip-article-ingest

@@ -195,6 +195,11 @@ class ArticleExtractor:
 
     def _find_main_container(self, soup: BeautifulSoup):
         domain = urlparse(self.base_url).netloc.lower()
+        if "baobinhduong.vn" in domain:
+            specific_container = soup.select_one("div.content#contentNews, #contentNews.content")
+            if specific_container and not _is_in_excluded_section(specific_container):
+                return specific_container
+
         if "baolaocai.vn" in domain:
             specific_container = soup.select_one("div.article__body.zce-content-body.cms-body")
             if not specific_container:
@@ -229,11 +234,19 @@ class ArticleExtractor:
         category_name = category_meta["content"].strip() if category_meta and category_meta.get("content") else None
 
         domain = urlparse(self.base_url).netloc.lower()
+        is_apife_baobinhduong = "baobinhduong.vn" in domain
         is_baocamau = "baocamau.vn" in domain
         is_baodongkhoi = "baodongkhoi.vn" in domain
         is_baolongan = "baolongan.vn" in domain
 
         explicit_category_id: str | None = None
+
+        if is_apife_baobinhduong:
+            apife_category_id, apife_category_name = _extract_apife_baobinhduong_category(soup)
+            if apife_category_id:
+                explicit_category_id = apife_category_id
+            if apife_category_name:
+                category_name = apife_category_name
 
         if is_baocamau:
             baocamau_category_id, baocamau_category_name = _extract_baocamau_category(soup)
@@ -457,6 +470,8 @@ class ArticleExtractor:
             image_tags = soup.select("article img, div[class*='article'] img, div[class*='content'] img")
 
         for img in image_tags:
+            if _is_logo_element(img):
+                continue
             for candidate in _collect_image_candidates(img):
                 resolved = self._absolutize(candidate)
                 if _should_skip_image_url(resolved):
@@ -470,6 +485,8 @@ class ArticleExtractor:
             source_tags = soup.select("picture source, source[type*='image']")
 
         for source_tag in source_tags:
+            if _is_logo_element(source_tag):
+                continue
             for candidate in _collect_image_candidates(source_tag):
                 resolved = self._absolutize(candidate)
                 if _should_skip_image_url(resolved):
@@ -910,6 +927,56 @@ def _should_skip_image_url(url: str) -> bool:
     if not filename and not parsed.netloc:
         return True
     return False
+
+
+def _is_logo_element(tag: Tag) -> bool:
+    attributes_to_check = ["class", "id", "alt", "title", "data-type"]
+    for attr in attributes_to_check:
+        value = tag.get(attr)
+        if not value:
+            continue
+        if isinstance(value, list):
+            tokens = [str(v).lower() for v in value]
+        else:
+            tokens = [str(value).lower()]
+        if any("logo" in token for token in tokens):
+            return True
+
+    current = tag.parent
+    for _ in range(2):
+        if not isinstance(current, Tag):
+            break
+        parent_classes = current.get("class") or []
+        if any("logo" in str(cls).lower() for cls in parent_classes):
+            return True
+        current = current.parent
+    return False
+
+
+def _extract_apife_baobinhduong_category(soup: BeautifulSoup) -> Tuple[str | None, str | None]:
+    breadcrumb_items = soup.select(".breadcrumb .breadcrumb-item, .breadcrumb-item")
+    if not breadcrumb_items:
+        return None, None
+
+    active_item = next(
+        (item for item in breadcrumb_items if "active" in (item.get("class") or [])),
+        breadcrumb_items[-1],
+    )
+
+    link = active_item.find("a")
+    raw_name = link.get_text(" ", strip=True) if link else active_item.get_text(" ", strip=True)
+    normalized_name = _normalize_whitespace(raw_name)
+    cleaned_name = re.sub(r"^[>\s:\-|]+", "", normalized_name)
+    category_name = cleaned_name or None
+
+    href_value = link.get("href") if link else None
+    category_slug: str | None = None
+    if href_value:
+        category_slug = _slug_from_url(href_value)
+    if not category_slug and category_name:
+        category_slug = _slugify(category_name)
+
+    return category_slug, category_name
 
 
 def _extract_baolongan_category(soup: BeautifulSoup) -> Tuple[str | None, str | None]:
