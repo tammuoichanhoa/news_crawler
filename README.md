@@ -27,9 +27,7 @@ echo "DATABASE_URL=postgresql://user:password@localhost:5432/crawl_db" > .env
 Use the `main.py` entrypoint to run the workflow:
 
 ```bash
-python main.py \
-  --sitemaps-file sitemaps.txt \
-  --stored-urls-dir stored_urls
+python main.py --database-url postgresql://crawl:crawl@localhost:5432/thoibao --sitemaps-file sitemaps.txt --slug thoibao_de --proxy <your_proxy> --skip-url-collection  --max-urls-per-site 10 --verbose --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 ```
 
 The command performs two steps:
@@ -73,12 +71,12 @@ If a sitemap or article host is blocked from your network, provide a proxy:
 python main.py \
   --sitemaps-file sitemaps.txt \
   --slug thoibao_de \
-  --proxy http://pwji7580:DPScyd4389@64.112.61.232:60802 \
+  --proxy <your_proxy> \
   --direct-crawl \
   --max-urls-per-site 10
 ```
 
-The proxy flag also accepts shorthand `64.112.61.232:60802:pwji7580:DPScyd4389` if you prefer not to include the scheme.
+The proxy flag also accepts shorthand `<your_proxy>` if you prefer not to include the scheme.
 
 ## Verify Crawled Data
 
