@@ -47,4 +47,4 @@ python3 main.py --skip-url-collection --slug tuoitre_vn --sitemap-exclude '*cate
 
 
 
-python main.py --database-url postgresql://crawl:crawl@localhost:5432/thoibao --sitemaps-file sitemaps.txt --slug thoibao_de --proxy http://pwji7580:DPScyd4389@64.112.61.232:60802 --skip-url-collection  --max-urls-per-site 10 --verbose --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+python main.py --database-url postgresql://crawl:crawl@localhost:5432/thoibao --sitemaps-file sitemaps.txt --slug thoibao_de --proxy <your_proxy> --skip-url-collection  --max-urls-per-site 10 --verbose --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
