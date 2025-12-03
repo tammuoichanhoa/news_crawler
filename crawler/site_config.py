@@ -68,6 +68,9 @@ ARTICLE_SITE_CONFIG: Dict[str, ArticleSiteConfig] = {
         ),
         main_container_keywords=("detail-cmain", "maincontent", "detail"),
         category_extractors=("cafef_category",),
+        inline_image_container_selectors=(
+            "div.detail-cmain.clearfix",
+        ),
     ),
     "vtv.vn": ArticleSiteConfig(
         category_extractors=("vtv_category",),
@@ -259,6 +262,18 @@ ARTICLE_SITE_CONFIG: Dict[str, ArticleSiteConfig] = {
         ),
         main_container_keywords=("article__body", "article", "body"),
         tag_extractors=("vneconomy_tags",),
+    ),
+    "tuoitre.vn": ArticleSiteConfig(
+        main_container_selectors=(
+            "div.detail-cmain.clearfix",
+            "div.detail-content.afcbc-body[data-role='content']",
+            "div.detail-content.afcbc-body",
+        ),
+        inline_image_container_selectors=(
+            "div.detail-content.afcbc-body[data-role='content']",
+            "div.detail-content.afcbc-body",
+        ),
+        excluded_section_selectors=("div[type='RelatedOneNews'].VCSortableInPreviewMode",),
     ),
     "nongnghiepmoitruong.vn": ArticleSiteConfig(
         description_selectors=("h2.main-intro.detail-intro",),

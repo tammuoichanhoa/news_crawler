@@ -48,6 +48,7 @@ The command performs two steps:
 - `--sitemap-include '*sitemap-article*'`: Restrict child sitemap traversal to matching glob patterns (useful when a sitemap index mixes article/image feeds).
 - `--direct-crawl`: Skip URL caching and crawl articles directly from the provided sitemaps in one pass.
 - `--verbose`: Enable debug logging.
+- `--proxy http://user:pass@host:port`: Route sitemap + article requests through an HTTP(S) proxy. Shorthand `host:port[:user:pass]` is also accepted.
 
 The pipeline is idempotent: stored URL files prevent duplicate sitemap work and the `articles.url` unique constraint avoids inserting the same article twice. Re-running after a failure will resume the crawl from the last successfully stored article.
 
@@ -63,6 +64,21 @@ python main.py --direct-crawl --sitemaps-file sitemaps.txt --max-urls-per-site 1
 
 Optional filters like `--slug` and `--sitemap-include` still apply in direct mode.
 Combine with `--max-total-urls` to cap overall work, e.g. `--max-total-urls 20`.
+
+### Crawling Blocked Hosts with a Proxy
+
+If a sitemap or article host is blocked from your network, provide a proxy:
+
+```bash
+python main.py \
+  --sitemaps-file sitemaps.txt \
+  --slug thoibao_de \
+  --proxy http://pwji7580:DPScyd4389@64.112.61.232:60802 \
+  --direct-crawl \
+  --max-urls-per-site 10
+```
+
+The proxy flag also accepts shorthand `64.112.61.232:60802:pwji7580:DPScyd4389` if you prefer not to include the scheme.
 
 ## Verify Crawled Data
 

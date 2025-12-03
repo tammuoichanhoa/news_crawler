@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html import unescape
 from typing import Any, Callable, Iterable, List, Optional, Sequence, Tuple
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 import requests
 from bs4 import BeautifulSoup, Tag
 from dateutil import parser as date_parser
@@ -84,7 +84,7 @@ class ArticleExtractor:
             )
 
         data.images.extend(self._extract_inline_images(soup, main_container))
-        data.images = _deduplicate_preserve_order(data.images)
+        data.images = _deduplicate_images(data.images, self.domain)
 
         data.videos = self._extract_media_urls(
             soup,
@@ -578,6 +578,9 @@ class ArticleExtractor:
             for source in video.find_all("source"):
                 append_from_tag(source)
 
+        for frame in search_space.find_all(["iframe", "embed"]):
+            append_from_tag(frame)
+
         for element in search_space.find_all(True):
             if element.name == "video":
                 continue
@@ -607,6 +610,7 @@ class ArticleCrawler:
         max_videos: int = 5,
         user_agent: str | None = None,
         throttler: RequestThrottler | None = None,
+        proxies: dict[str, str] | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.timeout = timeout
@@ -617,6 +621,8 @@ class ArticleCrawler:
 
         if user_agent:
             self.http.headers["User-Agent"] = user_agent
+        if proxies:
+            self.http.proxies.update(proxies)
         self._configure_legacy_ssl_hosts()
 
     def crawl(self, entry: SitemapEntry | str) -> bool:
@@ -819,6 +825,65 @@ def _deduplicate_preserve_order(items: Sequence[str]) -> List[str]:
         seen.add(item)
         result.append(item)
     return result
+
+
+def _deduplicate_images(urls: Sequence[str], domain: str) -> List[str]:
+    """
+    Remove duplicate images while tolerating provider-specific size variants.
+    """
+    seen_keys = set()
+    result: List[str] = []
+
+    for url in urls:
+        key = _normalize_image_url(url, domain) or url
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        result.append(url)
+
+    return result
+
+
+def _normalize_image_url(url: str, domain: str) -> str:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+
+    cleaned_path = _strip_size_hints_from_path(parsed.path)
+
+    normalized = parsed._replace(path=cleaned_path, query="", fragment="")
+    return urlunparse(normalized)
+
+_SIZE_SEGMENT_RE = re.compile(r"^(w|h)?\d{2,5}(x|_)?(w|h)?\d{2,5}$", re.IGNORECASE)
+_SIZE_SUFFIX_RE = re.compile(
+    r"([-_](w|width|h|height)?\d{2,5}(x|_)?(w|h)?\d{2,5})+$", re.IGNORECASE
+)
+
+
+def _strip_size_hints_from_path(path: str) -> str:
+    parts = [part for part in path.split("/") if part]
+    cleaned_parts: List[str] = []
+
+    i = 0
+    while i < len(parts):
+        part = parts[i]
+        lowered = part.lower()
+
+        # Tuoi Tre thumbnails put a leading "thumb_w/<size>/" folder; drop it so
+        # thumb and original normalize to the same key.
+        if lowered.startswith("thumb") and i + 1 < len(parts) and parts[i + 1].isdigit():
+            i += 2
+            continue
+
+        if _SIZE_SEGMENT_RE.match(lowered):
+            i += 1
+            continue
+
+        root, ext = posixpath.splitext(part)
+        stripped_root = _SIZE_SUFFIX_RE.sub("", root)
+        cleaned_parts.append(stripped_root + ext)
+        i += 1
+
+    return "/" + "/".join(cleaned_parts)
 
 
 def _contains_excluded_text(element_or_text) -> bool:
@@ -1051,16 +1116,16 @@ _IMAGE_PLACEHOLDER_KEYWORDS = {
 def _collect_image_candidates(tag: Tag) -> List[str]:
     candidates: List[str] = []
     attr_names = [
-        "src",
-        "data-src",
         "data-original",
+        "data-fullsrc",
+        "data-highres",
+        "data-src",
         "data-lazy-src",
         "data-medium-file",
         "data-large-file",
         "data-image",
-        "data-fullsrc",
         "data-zoom-image",
-        "data-highres",
+        "src",
     ]
     for attr_name in attr_names:
         value = tag.get(attr_name)
@@ -1150,6 +1215,12 @@ _VIDEO_EXTENSIONS = (
     ".flv",
     ".avi",
     ".wmv",
+)
+
+_VIDEO_EMBED_HOST_KEYWORDS = (
+    "youtube.com",
+    "youtu.be",
+    "youtube-nocookie.com",
 )
 
 _VIDEO_ATTRIBUTE_NAMES = (
@@ -1289,6 +1360,7 @@ def _looks_like_video_url(value: str) -> bool:
     if lowered.startswith(("javascript:", "data:", "#")):
         return False
     parsed = urlparse(value)
+    host = parsed.netloc.lower() if parsed.netloc else ""
     if parsed.scheme or parsed.netloc:
         path = parsed.path
     else:
@@ -1297,6 +1369,8 @@ def _looks_like_video_url(value: str) -> bool:
     if extension in _VIDEO_EXTENSIONS:
         return True
     if "m3u8" in lowered or "manifest" in lowered or "stream" in lowered:
+        return True
+    if any(keyword in host for keyword in _VIDEO_EMBED_HOST_KEYWORDS):
         return True
     return False
 

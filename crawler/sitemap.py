@@ -20,6 +20,7 @@ from .utils import extract_article_id
 
 logger = logging.getLogger(__name__)
 LEGACY_SSL_HOSTS = {"bnews.vn"}
+TRANSIENT_HTTP_STATUSES = {500, 502, 503, 504, 520, 521, 522, 523, 524}
 
 
 class _LegacySSLAdapter(HTTPAdapter):
@@ -66,6 +67,7 @@ class SitemapCrawler:
         throttler: RequestThrottler | None = None,
         url_include_patterns: Sequence[str] | None = None,
         url_exclude_patterns: Sequence[str] | None = None,
+        proxies: dict[str, str] | None = None,
     ) -> None:
         self.session = session or requests.Session()
         self.timeout = timeout
@@ -82,6 +84,8 @@ class SitemapCrawler:
 
         if user_agent:
             self.session.headers["User-Agent"] = user_agent
+        if proxies:
+            self.session.proxies.update(proxies)
         self._configure_legacy_ssl_hosts()
 
     def fetch_urls(self, sitemap_url: str) -> List[SitemapEntry]:
@@ -234,28 +238,59 @@ class SitemapCrawler:
         return any(fnmatch(url, pattern) for pattern in self.include_patterns)
 
     def _request_with_retry(self, url: str, max_attempts: int = 3) -> requests.Response:
-        attempt = 0
         last_exc: Exception | None = None
-        while attempt < max_attempts:
-            try:
-                if self.throttler:
-                    self.throttler.wait()
-                response = self.session.get(url, timeout=self.timeout)
-                response.raise_for_status()
-                return response
-            except requests.HTTPError as exc:
-                status = exc.response.status_code if exc.response is not None else None
-                # Retry on transient server errors.
-                if status not in {500, 502, 503, 504}:
-                    raise
-                last_exc = exc
-            except requests.RequestException as exc:
-                last_exc = exc
 
-            attempt += 1
-            sleep_time = min(5.0, 0.5 * (2 ** attempt))  # exponential backoff capped at 5s
-            jitter = random.uniform(0, 0.3 * sleep_time)
-            time.sleep(sleep_time + jitter)
+        def _attempt_request(target_url: str) -> requests.Response:
+            if self.throttler:
+                self.throttler.wait()
+            response = self.session.get(target_url, timeout=self.timeout)
+            response.raise_for_status()
+            return response
+
+        def _retry_loop(target_url: str) -> requests.Response | None:
+            nonlocal last_exc
+            for attempt in range(max_attempts):
+                try:
+                    return _attempt_request(target_url)
+                except requests.HTTPError as exc:
+                    status = exc.response.status_code if exc.response is not None else None
+                    if status not in TRANSIENT_HTTP_STATUSES:
+                        raise
+                    last_exc = exc
+                except requests.RequestException as exc:
+                    last_exc = exc
+
+                sleep_time = min(5.0, 0.5 * (2 ** (attempt + 1)))  # exponential backoff capped at 5s
+                jitter = random.uniform(0, 0.3 * sleep_time)
+                time.sleep(sleep_time + jitter)
+            return None
+
+        parsed = urlparse(url)
+        candidates: list[str] = [url]
+
+        # HTTP fallback for HTTPS-only URLs.
+        if parsed.scheme == "https":
+            http_candidate = parsed._replace(scheme="http").geturl()
+            if http_candidate not in candidates:
+                candidates.append(http_candidate)
+
+        # Try www-prefixed host if origin blocks bare domain via proxy/CDN.
+        if parsed.netloc and not parsed.netloc.startswith("www."):
+            www_netloc = f"www.{parsed.netloc}"
+            www_url = parsed._replace(netloc=www_netloc).geturl()
+            if www_url not in candidates:
+                candidates.append(www_url)
+            if parsed.scheme == "https":
+                www_http_url = parsed._replace(netloc=www_netloc, scheme="http").geturl()
+                if www_http_url not in candidates:
+                    candidates.append(www_http_url)
+
+        for idx, candidate in enumerate(candidates):
+            if idx > 0:
+                logger.warning("Retrying sitemap via fallback URL %s", candidate)
+            result = _retry_loop(candidate)
+            if result is not None:
+                return result
 
         if last_exc:
             raise last_exc

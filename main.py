@@ -121,6 +121,16 @@ BAODONGNAI_SITEMAP_EXCLUDE_PATTERNS = [
     "*baodongnai.com.vn/sitemaps/index.lastest.xml",
 ]
 
+TUOITRE_SITEMAP_EXCLUDE_PATTERNS = [
+    "*tuoitre.vn/sitemaps/category.rss",
+    "*tuoitre.vn/sitemaps/latest-news.rss",
+]
+
+THOIBAO_DE_SITEMAP_EXCLUDE_PATTERNS = [
+    "*thoibao.de/sitemaps/categories.xml",
+    "*thoibao.de/sitemaps/topics.xml",
+]
+
 DEFAULT_SITEMAP_EXCLUDE_PATTERNS = (
     GENK_SITEMAP_EXCLUDE_PATTERNS
     + KENH14_SITEMAP_EXCLUDE_PATTERNS
@@ -140,6 +150,8 @@ DEFAULT_SITEMAP_EXCLUDE_PATTERNS = (
     + BAOPHAPLUAT_SITEMAP_EXCLUDE_PATTERNS
     + BNEWS_SITEMAP_EXCLUDE_PATTERNS
     + BAODONGNAI_SITEMAP_EXCLUDE_PATTERNS
+    + TUOITRE_SITEMAP_EXCLUDE_PATTERNS
+    + THOIBAO_DE_SITEMAP_EXCLUDE_PATTERNS
 )
 
 
@@ -176,6 +188,32 @@ def build_default_sitemap_include_patterns(sitemap_urls: list[str] | None) -> li
     return include_patterns
 
 
+def build_proxy_config(proxy_arg: str | None) -> dict[str, str] | None:
+    """
+    Normalize proxy input into the requests ``proxies`` format.
+
+    Accepts a full proxy URL (e.g. http://user:pass@host:port) or a shorthand
+    host:port[:username:password] string.
+    """
+    if not proxy_arg:
+        return None
+
+    value = proxy_arg.strip()
+    if not value:
+        return None
+
+    proxy_url = value
+    if "://" not in value:
+        parts = value.split(":")
+        if len(parts) == 4:
+            host, port, username, password = parts
+            proxy_url = f"http://{username}:{password}@{host}:{port}"
+        elif len(parts) == 2:
+            host, port = parts
+            proxy_url = f"http://{host}:{port}"
+    return {"http": proxy_url, "https": proxy_url}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Crawl sitemap URLs and ingest news articles into the database.")
 
@@ -206,6 +244,10 @@ def parse_args() -> argparse.Namespace:
         help="Skip child sitemaps whose URL matches these glob patterns (e.g. --sitemap-exclude '*categories*').",
     )
     parser.add_argument("--user-agent", help="Override the HTTP User-Agent header for outbound requests.")
+    parser.add_argument(
+        "--proxy",
+        help="HTTP(S) proxy applied to sitemap and article requests. Supports full URLs or host:port[:user:pass] shorthand.",
+    )
     parser.add_argument(
         "--direct-crawl",
         action="store_true",
@@ -265,6 +307,7 @@ def main() -> None:
         raise SystemExit("--max-request-delay must be greater than or equal to --min-request-delay")
 
     allowed_extensions = args.allowed_extension or None
+    proxies = build_proxy_config(args.proxy)
     throttler: RequestThrottler | None = None
     if args.min_request_delay > 0 or (args.max_request_delay is not None and args.max_request_delay > 0):
         throttler = RequestThrottler(
@@ -301,6 +344,7 @@ def main() -> None:
         sitemap_exclude_patterns=sitemap_exclude_patterns or None,
         url_include_patterns=args.url_include,
         url_exclude_patterns=args.url_exclude,
+        proxies=proxies,
     )
 
     if args.direct_crawl:

@@ -28,6 +28,7 @@ class CrawlPipeline:
         url_exclude_patterns: Sequence[str] | None = None,
         request_throttler: RequestThrottler | None = None,
         user_agent: str | None = None,
+        proxies: dict[str, str] | None = None,
     ) -> None:
         self.url_store = UrlStore(stored_urls_dir)
         self.sitemap_crawler = SitemapCrawler(
@@ -38,11 +39,13 @@ class CrawlPipeline:
             throttler=request_throttler,
             url_include_patterns=url_include_patterns,
             url_exclude_patterns=url_exclude_patterns,
+            proxies=proxies,
         )
         self.article_crawler = ArticleCrawler(
             session_factory=session_factory,
             user_agent=user_agent,
             throttler=request_throttler,
+            proxies=proxies,
         )
 
     def _fetch_sitemap_urls(
