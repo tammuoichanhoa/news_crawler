@@ -5,7 +5,7 @@ from models import Base
 # Default database connection URL
 DEFAULT_DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://crawl:crawl@localhost:5432/vnexpress_news"
+    "postgresql://crawl:crawl@localhost:5432/vnexpress"
 )
 
 def setup_database(database_url=DEFAULT_DATABASE_URL):

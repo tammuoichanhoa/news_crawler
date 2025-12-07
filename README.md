@@ -44,8 +44,14 @@ python main.py
 - `--end-date`: ISO formatted end date (default: current time)
 - `--interval-days`: Size of the crawl window in days (default: 7)
 - `--max-pages`: Maximum pages per date window (default: 10)
+- `--workers`: Number of concurrent workers fetching article details (default: 4)
+- `--request-delay`: Delay between listing requests in seconds to avoid throttling (default: 0.25)
+- `--skip-comments`: Skip Selenium-based comment crawling for faster runs
 - `--categories`: Optional list of category slugs to crawl (e.g., thoi-su the-gioi)
 - `--database-url`: PostgreSQL connection string
+- `--urls-file`: Path to store/load crawled article URLs (default: `resume_url.txt`)
+- `--only-crawl-urls`: Only crawl article URLs, save them, and exit
+- `--use-url-file`: Skip category crawling and load article URLs from the specified file
 
 ### Examples
 
@@ -56,12 +62,27 @@ python main.py --categories thoi-su the-gioi
 
 Crawl articles for a specific date range:
 ```bash
-python main.py --start-date 2024-01-01 --end-date 2024-01-31
+python main.py --start-date 2020-07-01 --end-date 2025-11-20
 ```
 
 Crawl with custom database connection:
 ```bash
-python main.py --database-url "postgresql://crawl:crawl@localhost:5432/vietnamese_news_db"
+python main.py --database-url "postgresql://crawl:crawl@localhost:5432/vnexpress"
+```
+
+Step 1: only crawl and save URLs:
+```bash
+python main.py --only-crawl-urls --urls-file resume_url.txt
+```
+
+Step 2: resume detail crawling from the saved list of URLs:
+```bash
+python main.py --use-url-file --urls-file resume_url.txt
+```
+
+Speed up a crawl while avoiding comment scraping:
+```bash
+python main.py --workers 8 --request-delay 0.1 --skip-comments
 ```
 
 ## Data Storage
@@ -85,3 +106,9 @@ Feel free to open issues or submit pull requests for improvements or bug fixes.
 ## License
 
 [Insert your chosen license here]
+
+
+Usage:
+
+Crawl URLs only: python main.py --only-crawl-urls --urls-file resume_url.txt
+Resume detail crawl from saved URLs: python main.py --use-url-file --urls-file resume_url.txt

@@ -2,6 +2,7 @@ import argparse
 import mimetypes
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Union
@@ -17,10 +18,10 @@ from models import Article, ArticleImage, ArticleVideo, Base, generate_uuid7
 
 DEFAULT_DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://crawl:crawl@localhost:5432/vnexpress_news",
+    "postgresql://crawl:crawl@localhost:5432/vnexpress",
 )
 IMAGE_STORAGE_DIR = Path(
-    os.getenv("IMAGE_STORAGE_DIR", "./vnexpress")
+    os.getenv("IMAGE_STORAGE_DIR", "/mnt/drive2/baoanh_crawler/vnexpress")
 )
 
 def resolve_date(value: Optional[str], fallback: datetime) -> datetime:
@@ -200,6 +201,82 @@ def build_video_models(article: Dict[str, Any], article_id: uuid.UUID) -> List[A
     return videos
 
 
+def save_urls_to_file(articles: Iterable[Dict[str, Any]], destination: Path) -> int:
+    unique_urls: List[str] = []
+    seen = set()
+    for article in articles:
+        url = article.get("url")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        unique_urls.append(url)
+
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("\n".join(unique_urls), encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"Cannot write URL cache to '{destination}': {exc}") from exc
+
+    print(f"✓ Saved {len(unique_urls)} URLs to {destination}")
+    return len(unique_urls)
+
+
+def load_urls_from_file(path: Path) -> List[str]:
+    if not path.exists():
+        raise FileNotFoundError(f"URL cache '{path}' does not exist.")
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise RuntimeError(f"Cannot read URL cache '{path}': {exc}") from exc
+
+    urls: List[str] = []
+    seen = set()
+    for line in lines:
+        url = line.strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+    return urls
+
+
+def fetch_article_details(scraper: VNExpressScraper, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    total = len(articles)
+    if total == 0:
+        return []
+
+    print(
+        f"Fetching full content for {total} articles "
+        f"with {scraper.detail_workers} worker(s)..."
+    )
+    detailed_articles: List[Dict[str, Any]] = []
+
+    def _fetch_detail(article: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        # Log URL being processed to track progress, especially when using a URL file.
+        url = article.get("url")
+        if url:
+            print(f"[DETAIL] Fetching article detail for URL: {url}")
+        return scraper.parse_article_detail(article["url"], summary=article)
+
+    with ThreadPoolExecutor(max_workers=scraper.detail_workers) as executor:
+        future_to_article = {
+            executor.submit(_fetch_detail, article): article for article in articles
+        }
+        for idx, future in enumerate(as_completed(future_to_article), 1):
+            article = future_to_article[future]
+            try:
+                detailed = future.result()
+                if detailed:
+                    detailed_articles.append(detailed)
+            except Exception as exc:  # pragma: no cover - safety net for unexpected parser issues
+                print(f"[WARN] Failed to fetch {article.get('url')}: {exc}")
+            if idx % 10 == 0 or idx == total:
+                print(f"Fetched {idx}/{total} articles")
+
+    return detailed_articles
+
+
 def upsert_articles(
     session: Session,
     articles: Iterable[Dict[str, Any]],
@@ -277,6 +354,23 @@ def parse_args() -> argparse.Namespace:
         help="Maximum pages per date window (default: 10).",
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Concurrent workers for fetching article details (default: 4).",
+    )
+    parser.add_argument(
+        "--request-delay",
+        type=float,
+        default=0.2,
+        help="Delay (seconds) between listing requests to reduce throttling (default: 0.25).",
+    )
+    parser.add_argument(
+        "--skip-comments",
+        action="store_true",
+        help="Skip Selenium comment crawling for faster runs.",
+    )
+    parser.add_argument(
         "--categories",
         nargs="*",
         help="Optional list of category slugs to crawl (e.g. thoi-su the-gioi).",
@@ -285,6 +379,21 @@ def parse_args() -> argparse.Namespace:
         "--database-url",
         default=DEFAULT_DATABASE_URL,
         help="PostgreSQL connection string (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--urls-file",
+        default="resume_url.txt",
+        help="Path to store/load crawled article URLs (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--only-crawl-urls",
+        action="store_true",
+        help="Only crawl article URLs, save to --urls-file, then exit.",
+    )
+    parser.add_argument(
+        "--use-url-file",
+        action="store_true",
+        help="Skip category crawling and load article URLs from --urls-file.",
     )
     return parser.parse_args()
 
@@ -301,8 +410,12 @@ def main() -> None:
     if start_date >= end_date:
         raise ValueError("start-date must be earlier than end-date.")
 
-    scraper = VNExpressScraper()
-    if args.categories:
+    scraper = VNExpressScraper(
+        request_delay=args.request_delay,
+        detail_workers=args.workers,
+        fetch_comments=not args.skip_comments,
+    )
+    if args.categories and not args.use_url_file:
         selected = {
             slug: scraper.categories[slug]
             for slug in args.categories
@@ -315,18 +428,44 @@ def main() -> None:
             )
         scraper.categories = selected
 
-    print(
-        f"Crawling categories {', '.join(scraper.categories.keys())} "
-        f"from {start_date.date()} to {end_date.date()}..."
-    )
+    url_cache_path = Path(args.urls_file)
 
-    articles = scraper.crawl_all_categories(
-        start_date=start_date,
-        end_date=end_date,
-        interval_days=args.interval_days,
-        max_pages_per_range=args.max_pages,
-        get_full_content=True,
-    )
+    if args.use_url_file:
+        try:
+            cached_urls = load_urls_from_file(url_cache_path)
+        except (FileNotFoundError, RuntimeError) as exc:
+            print(exc)
+            return
+        if not cached_urls:
+            print(f"No URLs found in {url_cache_path}; nothing to fetch.")
+            return
+        print(f"Loaded {len(cached_urls)} URLs from {url_cache_path}; skipping category crawl.")
+        article_summaries = [{"url": url} for url in cached_urls]
+    else:
+        print(
+            f"Crawling categories {', '.join(scraper.categories.keys())} "
+            f"from {start_date.date()} to {end_date.date()}..."
+        )
+        article_summaries = scraper.crawl_all_categories(
+            start_date=start_date,
+            end_date=end_date,
+            interval_days=args.interval_days,
+            max_pages_per_range=args.max_pages,
+            get_full_content=False,
+        )
+
+        if not article_summaries:
+            print("No articles fetched; nothing to persist.")
+            return
+
+        save_urls_to_file(article_summaries, url_cache_path)
+        print(f"Saved {url_cache_path}")
+
+        if args.only_crawl_urls:
+            print("URLs saved; exiting because --only-crawl-urls is set.")
+            return
+
+    articles = fetch_article_details(scraper, article_summaries)
 
     if not articles:
         print("No articles fetched; nothing to persist.")

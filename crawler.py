@@ -1,26 +1,29 @@
+import atexit
+import csv
+import json
+import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from urllib.parse import urljoin
+
 import requests
 from bs4 import BeautifulSoup
-import time
-import json
-from datetime import datetime, timedelta, timezone
-import csv
-from urllib.parse import urljoin
-from typing import Any, Dict, List, Optional
-import threading
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 from selenium import webdriver
-from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
+from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
-from bs4 import BeautifulSoup
 from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
-import sys
-from pathlib import Path
-import atexit
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[1]  # root directory
@@ -31,6 +34,7 @@ if str(ROOT) not in sys.path:
 from contextlib import contextmanager
 
 _thread_local_driver = threading.local()
+_thread_local_session = threading.local()
 _shared_drivers = set()
 _shared_driver_lock = threading.Lock()
 
@@ -231,6 +235,12 @@ class VNExpressScraper:
         selenium_max_load_more: int = 3,
         selenium_comment_tab_selector: str = "",
         selenium_load_more_selector: str = "",
+        request_delay: float = 0.5,
+        detail_workers: int = 4,
+        fetch_comments: bool = True,
+        request_timeout: float = 20.0,
+        request_retries: int = 3,
+        request_backoff: float = 0.75,
     ):
         self.base_url = "https://vnexpress.net"
         self.headers = {
@@ -241,6 +251,12 @@ class VNExpressScraper:
         self.selenium_max_load_more = selenium_max_load_more
         self.selenium_comment_tab_selector = selenium_comment_tab_selector
         self.selenium_load_more_selector = selenium_load_more_selector
+        self.request_delay = max(0.0, request_delay)
+        self.detail_workers = max(1, int(detail_workers or 1))
+        self.fetch_comments = fetch_comments
+        self.request_timeout = max(1.0, float(request_timeout or 1.0))
+        self.request_retries = max(0, int(request_retries or 0))
+        self.request_backoff = max(0.0, float(request_backoff or 0.0))
         
         # Main categories with their IDs
         self.categories = {
@@ -261,11 +277,37 @@ class VNExpressScraper:
             'y-kien': '1001012',
             'tam-su': '1001014'
         }
+
+    def _get_session(self) -> requests.Session:
+        """Return a per-thread requests session with connection pooling."""
+        session = getattr(_thread_local_session, "session", None)
+        if session is None:
+            session = requests.Session()
+            retry_cfg = Retry(
+                total=self.request_retries,
+                connect=self.request_retries,
+                read=self.request_retries,
+                backoff_factor=self.request_backoff,
+                status_forcelist=(429, 500, 502, 503, 504),
+                allowed_methods={"HEAD", "GET", "OPTIONS"},
+                raise_on_status=False,
+                respect_retry_after_header=True,
+            )
+            adapter = HTTPAdapter(
+                pool_connections=32,
+                pool_maxsize=32,
+                max_retries=retry_cfg,
+            )
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
+            session.headers.update(self.headers)
+            _thread_local_session.session = session
+        return session
     
     def get_page(self, url):
         """Fetch a page with error handling"""
         try:
-            response = requests.get(url, headers=self.headers, timeout=10)
+            response = self._get_session().get(url, timeout=self.request_timeout)
             response.raise_for_status()
             return response.text
         except requests.RequestException as e:
@@ -538,15 +580,16 @@ class VNExpressScraper:
             if 'comments' not in article_data:
                 article_data['comments'] = {'count': 0, 'list': []}
 
-            selenium_comments = collect_comments_selenium(
-                url,
-                selenium_wait_timeout=self.selenium_wait_timeout,
-                selenium_max_load_more=self.selenium_max_load_more,
-                selenium_comment_tab_selector=self.selenium_comment_tab_selector or "",
-                selenium_load_more_selector=self.selenium_load_more_selector or "",
-            )
-            if selenium_comments is not None:
-                article_data['comments'] = selenium_comments
+            if self.fetch_comments:
+                selenium_comments = collect_comments_selenium(
+                    url,
+                    selenium_wait_timeout=self.selenium_wait_timeout,
+                    selenium_max_load_more=self.selenium_max_load_more,
+                    selenium_comment_tab_selector=self.selenium_comment_tab_selector or "",
+                    selenium_load_more_selector=self.selenium_load_more_selector or "",
+                )
+                if selenium_comments is not None:
+                    article_data['comments'] = selenium_comments
             
             # Media extraction
             article_data['images'] = self._collect_images(content_tag)
@@ -586,7 +629,8 @@ class VNExpressScraper:
             print(f"  Found {len(page_articles)} articles")
             
             page += 1
-            time.sleep(1)  # Be respectful
+            if self.request_delay:
+                time.sleep(self.request_delay)
         
         return articles
     
@@ -608,7 +652,8 @@ class VNExpressScraper:
             all_articles.extend(articles)
             
             print(f"Total articles in this range: {len(articles)}")
-            time.sleep(2)  # Delay between date ranges
+            if self.request_delay:
+                time.sleep(self.request_delay)
         
         # Remove duplicates
         unique_articles = {article['url']: article for article in all_articles}
@@ -657,21 +702,30 @@ class VNExpressScraper:
         
         # Optionally get full content
         if get_full_content:
-            print("Fetching full content for articles...")
-            detailed_articles = []
-            for i, article in enumerate(all_articles, 1):
-                print(f"Fetching {i}/{len(all_articles)}: {article['title'][:50]}...")
-                detailed = self.parse_article_detail(
-                    article['url'],
-                    summary=article
-                )
-                if detailed:
-                    detailed_articles.append(detailed)
-                time.sleep(1)
-                
-                # Save progress every 100 articles
-                if i % 100 == 0:
-                    self.save_to_json(detailed_articles, f'vnexpress_detailed_progress.json')
+            total = len(all_articles)
+            print(
+                f"Fetching full content for {total} articles "
+                f"with {self.detail_workers} worker(s)..."
+            )
+            detailed_articles: List[Dict[str, Any]] = []
+
+            def _fetch_detail(article: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+                return self.parse_article_detail(article['url'], summary=article)
+
+            with ThreadPoolExecutor(max_workers=self.detail_workers) as executor:
+                future_to_article = {
+                    executor.submit(_fetch_detail, article): article for article in all_articles
+                }
+                for idx, future in enumerate(as_completed(future_to_article), 1):
+                    article = future_to_article[future]
+                    try:
+                        detailed = future.result()
+                        if detailed:
+                            detailed_articles.append(detailed)
+                    except Exception as exc:
+                        print(f"[WARN] Failed to fetch {article.get('url')}: {exc}")
+                    if idx % 10 == 0 or idx == total:
+                        print(f"Fetched {idx}/{total} articles")
             
             return detailed_articles
         
