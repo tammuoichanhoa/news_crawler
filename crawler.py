@@ -231,6 +231,7 @@ class VNExpressScraper:
         selenium_max_load_more: int = 3,
         selenium_comment_tab_selector: str = "",
         selenium_load_more_selector: str = "",
+        crawl_comments: bool = False,
     ):
         self.base_url = "https://vnexpress.net"
         self.headers = {
@@ -241,6 +242,7 @@ class VNExpressScraper:
         self.selenium_max_load_more = selenium_max_load_more
         self.selenium_comment_tab_selector = selenium_comment_tab_selector
         self.selenium_load_more_selector = selenium_load_more_selector
+        self.crawl_comments = crawl_comments
         
         # Main categories with their IDs
         self.categories = {
@@ -538,15 +540,16 @@ class VNExpressScraper:
             if 'comments' not in article_data:
                 article_data['comments'] = {'count': 0, 'list': []}
 
-            selenium_comments = collect_comments_selenium(
-                url,
-                selenium_wait_timeout=self.selenium_wait_timeout,
-                selenium_max_load_more=self.selenium_max_load_more,
-                selenium_comment_tab_selector=self.selenium_comment_tab_selector or "",
-                selenium_load_more_selector=self.selenium_load_more_selector or "",
-            )
-            if selenium_comments is not None:
-                article_data['comments'] = selenium_comments
+            if self.crawl_comments:
+                selenium_comments = collect_comments_selenium(
+                    url,
+                    selenium_wait_timeout=self.selenium_wait_timeout,
+                    selenium_max_load_more=self.selenium_max_load_more,
+                    selenium_comment_tab_selector=self.selenium_comment_tab_selector or "",
+                    selenium_load_more_selector=self.selenium_load_more_selector or "",
+                )
+                if selenium_comments is not None:
+                    article_data['comments'] = selenium_comments
             
             # Media extraction
             article_data['images'] = self._collect_images(content_tag)

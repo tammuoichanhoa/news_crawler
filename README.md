@@ -56,7 +56,7 @@ python main.py --categories thoi-su the-gioi
 
 Crawl articles for a specific date range:
 ```bash
-python main.py --start-date 2024-01-01 --end-date 2024-01-31
+python main.py --start-date 2024-01-01 --end-date 2024-01-02
 ```
 
 Crawl with custom database connection:
@@ -85,3 +85,7 @@ Feel free to open issues or submit pull requests for improvements or bug fixes.
 ## License
 
 [Insert your chosen license here]
+
+
+
+thoi-su, goc-nhin, the-gioi, kinh-doanh, giai-tri, the-thao, phap-luat, giao-duc, suc-khoe, doi-song, du-lich, khoa-hoc, so-hoa, xe, y-kien, tam-su

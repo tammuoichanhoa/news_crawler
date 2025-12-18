@@ -286,6 +286,11 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_DATABASE_URL,
         help="PostgreSQL connection string (default: %(default)s).",
     )
+    parser.add_argument(
+        "--crawl-comments",
+        action="store_true",
+        help="Enable crawling comments via Selenium (disabled by default to speed up crawl).",
+    )
     return parser.parse_args()
 
 
@@ -301,7 +306,7 @@ def main() -> None:
     if start_date >= end_date:
         raise ValueError("start-date must be earlier than end-date.")
 
-    scraper = VNExpressScraper()
+    scraper = VNExpressScraper(crawl_comments=args.crawl_comments)
     if args.categories:
         selected = {
             slug: scraper.categories[slug]
