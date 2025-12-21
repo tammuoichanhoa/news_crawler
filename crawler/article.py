@@ -73,17 +73,19 @@ class ArticleExtractor:
 
         restrict_media_to_body = bool(self.site_config and self.site_config.inline_media_only)
 
-        if restrict_media_to_body:
-            data.images = []
-        else:
-            data.images = self._extract_media_urls(
+        inline_images = self._extract_inline_images(soup, main_container)
+        metadata_images: list[str] = []
+        if not restrict_media_to_body:
+            metadata_images = self._extract_media_urls(
                 soup,
                 ["meta[property='og:image']", "meta[name='og:image']"],
                 "content",
                 skip_predicate=_should_skip_image_url,
             )
 
-        data.images.extend(self._extract_inline_images(soup, main_container))
+        # Prefer images that are part of the article body; only fall back to metadata
+        # images when none were found to avoid storing redundant site-wide thumbnails.
+        data.images = inline_images or metadata_images
         data.images = _deduplicate_preserve_order(data.images)
 
         data.videos = self._extract_media_urls(
@@ -1967,6 +1969,31 @@ def _extract_vietnamnet_category(base_url: str, soup: BeautifulSoup) -> Tuple[st
     return category_id, category_name
 
 
+def _extract_dantri_category(base_url: str, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
+    breadcrumb_links = soup.select("a[data-content-name='article-breadcrumb']")
+    if not breadcrumb_links:
+        breadcrumb_links = soup.select("li.dt-font-Inter.dt-float-left a")
+
+    category_id: str | None = None
+    category_name: str | None = None
+
+    for link in breadcrumb_links:
+        text_value = _normalize_whitespace(link.get_text(" ", strip=True))
+        if not text_value and link.get("title"):
+            text_value = _normalize_whitespace(str(link["title"]))
+
+        href = link.get("data-content-target") or link.get("href")
+        if href:
+            slug = _slug_from_url(urljoin(base_url, href))
+            if slug:
+                category_id = slug
+
+        if text_value:
+            category_name = text_value
+
+    return category_id, category_name
+
+
 _CATEGORY_EXTRACTORS: dict[str, Callable[[str, BeautifulSoup], Tuple[str | None, str | None]]] = {
     "genk_category": _extract_genk_category,
     "kenh14_category": _extract_kenh14_category,
@@ -1982,6 +2009,7 @@ _CATEGORY_EXTRACTORS: dict[str, Callable[[str, BeautifulSoup], Tuple[str | None,
     "soha_category": _extract_soha_category,
     "vtv_category": _extract_vtv_category,
     "vietnamnet_category": _extract_vietnamnet_category,
+    "dantri_category": _extract_dantri_category,
 }
 
 _TAG_EXTRACTORS: dict[str, Callable[[BeautifulSoup], List[str]]] = {

@@ -1,4 +1,6 @@
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence
 
@@ -28,7 +30,9 @@ class CrawlPipeline:
         url_exclude_patterns: Sequence[str] | None = None,
         request_throttler: RequestThrottler | None = None,
         user_agent: str | None = None,
+        workers: int = 8,
     ) -> None:
+        self.workers = max(1, workers)
         self.url_store = UrlStore(stored_urls_dir)
         self.sitemap_crawler = SitemapCrawler(
             allowed_extensions=allowed_extensions,
@@ -39,11 +43,67 @@ class CrawlPipeline:
             url_include_patterns=url_include_patterns,
             url_exclude_patterns=url_exclude_patterns,
         )
-        self.article_crawler = ArticleCrawler(
-            session_factory=session_factory,
-            user_agent=user_agent,
-            throttler=request_throttler,
-        )
+        self._article_crawler_args = {
+            "session_factory": session_factory,
+            "user_agent": user_agent,
+            "throttler": request_throttler,
+        }
+        self._article_crawler_local: threading.local = threading.local()
+
+    def _get_article_crawler(self) -> ArticleCrawler:
+        crawler = getattr(self._article_crawler_local, "instance", None)
+        if crawler is None:
+            crawler = ArticleCrawler(**self._article_crawler_args)
+            self._article_crawler_local.instance = crawler
+        return crawler
+
+    def _crawl_entries(
+        self,
+        entries: Sequence[SitemapEntry | str],
+        slug: str | None = None,
+        start_index: int = 0,
+    ) -> tuple[int, int]:
+        """
+        Crawl entries concurrently and return (stored_count, next_cursor_position).
+        When slug is provided, the cursor is updated as entries complete to support resume.
+        """
+        if not entries:
+            return 0, start_index
+
+        success_count = 0
+        completed_indices: set[int] = set()
+        next_cursor = start_index
+
+        def crawl_entry(entry: SitemapEntry | str) -> bool:
+            return self._get_article_crawler().crawl(entry)
+
+        with ThreadPoolExecutor(max_workers=self.workers) as executor:
+            future_to_index = {
+                executor.submit(crawl_entry, entry): start_index + idx
+                for idx, entry in enumerate(entries)
+            }
+            for future in as_completed(future_to_index):
+                index = future_to_index[future]
+                try:
+                    stored = future.result()
+                except Exception as exc:
+                    logger.error("Unexpected error while crawling article: %s", exc)
+                    stored = False
+
+                if stored:
+                    success_count += 1
+                completed_indices.add(index)
+
+                while next_cursor in completed_indices:
+                    next_cursor += 1
+                    if slug is not None:
+                        self.url_store.set_cursor(slug, next_cursor)
+
+        final_cursor = start_index + len(entries)
+        if slug is not None:
+            self.url_store.set_cursor(slug, final_cursor)
+
+        return success_count, final_cursor
 
     def _fetch_sitemap_urls(
         self,
@@ -88,6 +148,9 @@ class CrawlPipeline:
         processed_total = 0
 
         for file_path in sorted(self.url_store.base_dir.glob("*_urls.txt")):
+            if max_total_urls is not None and processed_total >= max_total_urls:
+                break
+
             slug = file_path.stem.replace("_urls", "")
             if allowed_slugs and slug not in allowed_slugs:
                 continue
@@ -108,27 +171,18 @@ class CrawlPipeline:
                 urls = urls[:max_urls_per_site]
 
             if max_total_urls is not None:
-                remaining = max_total_urls - processed_total
-                if remaining <= 0:
+                remaining_global = max_total_urls - processed_total
+                if remaining_global <= 0:
                     break
-                urls = urls[:remaining]
+                urls = urls[:remaining_global]
 
             success_count = 0
-            logger.info("Crawling %s URLs for slug=%s", len(urls), slug)
-            current_index = start_index
+            logger.info("Crawling %s URLs for slug=%s with %s workers", len(urls), slug, self.workers)
+            success_count, final_cursor = self._crawl_entries(urls, slug=slug, start_index=start_index)
 
-            for entry in urls:
-                stored = self.article_crawler.crawl(entry)
-                if stored:
-                    success_count += 1
-                processed_total += 1
-                current_index += 1
-                self.url_store.set_cursor(slug, current_index)
-                if max_total_urls is not None and processed_total >= max_total_urls:
-                    logger.info("Reached global crawl limit (%s). Stopping.", max_total_urls)
-                    break
-
+            processed_total += len(urls)
             processed_summary[slug] = success_count
+            self.url_store.set_cursor(slug, final_cursor)
             if max_total_urls is not None and processed_total >= max_total_urls:
                 break
         return processed_summary
@@ -147,28 +201,26 @@ class CrawlPipeline:
         processed_total = 0
 
         for slug, urls in urls_by_slug.items():
+            if max_total_urls is not None and processed_total >= max_total_urls:
+                break
+
             if max_urls_per_site is not None:
                 urls = urls[:max_urls_per_site]
 
             if max_total_urls is not None:
-                remaining = max_total_urls - processed_total
-                if remaining <= 0:
+                remaining_global = max_total_urls - processed_total
+                if remaining_global <= 0:
                     break
-                urls = urls[:remaining]
+                urls = urls[:remaining_global]
 
             if store_urls:
                 self.url_store.append_new(slug, urls)
 
             success_count = 0
-            logger.info("Directly crawling %s URLs for slug=%s", len(urls), slug)
-            for entry in urls:
-                stored = self.article_crawler.crawl(entry)
-                if stored:
-                    success_count += 1
-                processed_total += 1
-                if max_total_urls is not None and processed_total >= max_total_urls:
-                    logger.info("Reached global crawl limit (%s). Stopping.", max_total_urls)
-                    break
+            logger.info("Directly crawling %s URLs for slug=%s with %s workers", len(urls), slug, self.workers)
+            success_count, _ = self._crawl_entries(urls, start_index=0)
+
+            processed_total += len(urls)
             summary[slug] = success_count
             if max_total_urls is not None and processed_total >= max_total_urls:
                 break
@@ -205,3 +257,7 @@ class CrawlPipeline:
         if candidate_dt and not incumbent_dt:
             return True
         return False
+
+    def export_all_urls(self, destination: Path) -> int:
+        """Write all cached URLs into a single text file for reuse."""
+        return self.url_store.export_all(destination)

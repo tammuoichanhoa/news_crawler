@@ -32,10 +32,24 @@ python main.py --database-url postgresql://crawl:crawl@localhost:5432/mattran --
 
 
 
-python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baolaocai --skip-url-collection --slug baolaocai_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baolaocai --skip-url-collection --slug baolaocai_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*'
 
-python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baolaocai --skip-url-collection --slug baolaocai_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baolaocai --skip-url-collection --slug baolaocai_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*'
 
 
 
-python3 main.py --skip-url-collection --slug soha_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*
+python3 main.py --skip-url-collection --slug soha_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*'
+python3 main.py --skip-url-collection --slug dantri_com_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*' --max-total-urls 2
+
+
+
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/bnews --skip-url-collection --slug bnews_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*'
+
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/soha --skip-url-collection --slug soha_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*'
+
+
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/vneconomy --skip-url-collection --slug vneconomy_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*'
+
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baophapluat --skip-url-collection --slug baophapluat_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*'
+
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baodongnai --skip-url-collection --slug baodongnai_com_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*'
