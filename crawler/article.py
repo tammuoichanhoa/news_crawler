@@ -1,18 +1,21 @@
-import json
 import logging
+import posixpath
 import re
+import unicodedata
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Iterable, List, Optional, Sequence, Tuple
-from urllib.parse import urljoin
-
+from typing import Callable, Iterable, List, Optional, Sequence, Tuple
+from urllib.parse import urljoin, urlparse
+import json
 import requests
 from bs4 import BeautifulSoup, Tag
 from dateutil import parser as date_parser
 
 from db.models import Article, ArticleImage, ArticleVideo
+from .sitemap import SitemapEntry
 from .throttle import RequestThrottler
+from .utils import parse_w3c_datetime
 
 
 logger = logging.getLogger(__name__)
@@ -23,11 +26,16 @@ class ArticleData:
     url: str
     title: str | None = None
     description: str | None = None
+    summary: str | None = None
+    content_html: str | None = None
     content: str | None = None
     category_id: str | None = None
     category_name: str | None = None
     tags: str | None = None
     publish_date: datetime | None = None
+    last_modified: datetime | None = None
+    author: str | None = None
+    external_id: str | None = None
     images: List[str] = field(default_factory=list)
     videos: List[str] = field(default_factory=list)
 
@@ -43,16 +51,29 @@ class ArticleExtractor:
         data = ArticleData(url=self.base_url)
         data.title = self._extract_title(soup)
         data.description = self._extract_description(soup)
-        data.content = self._extract_content(soup)
+        data.summary = self._extract_summary(soup)
+
+        main_container = self._find_main_container(soup)
+
+        data.content_html = self._extract_content_html(main_container)
+        data.content = self._extract_content(soup, main_container)
         data.category_id, data.category_name = self._extract_category(soup)
         data.tags = self._extract_tags(soup)
         data.publish_date = self._extract_publish_date(soup)
-        data.images = self._extract_media_urls(soup, ["meta[property='og:image']", "meta[name='og:image']"], "content")
-        data.images.extend(self._extract_inline_images(soup))
+        data.last_modified = self._extract_last_modified(soup)
+        data.author = self._extract_author(soup)
+
+        data.images = self._extract_media_urls(
+            soup,
+            ["meta[property='og:image']", "meta[name='og:image']"],
+            "content",
+            skip_predicate=_should_skip_image_url,
+        )
+        data.images.extend(self._extract_inline_images(soup, main_container))
         data.images = _deduplicate_preserve_order(data.images)
 
         data.videos = self._extract_media_urls(soup, ["meta[property='og:video']"], "content")
-        data.videos.extend(self._extract_inline_videos(soup))
+        data.videos.extend(self._extract_inline_videos(soup, main_container))
         data.videos = _deduplicate_preserve_order(data.videos)
 
         return data
@@ -75,8 +96,53 @@ class ArticleExtractor:
         ]
         return _first_text(soup, selectors)
 
-    def _extract_content(self, soup: BeautifulSoup) -> str | None:
-        container = self._find_main_container(soup)
+    def _extract_summary(self, soup: BeautifulSoup) -> str | None:
+        selectors = [
+            "div.article__sapo",
+            "div.article__lead",
+            "div.article__desc",
+            "div.cms-desc",
+            "[itemprop='description']",
+            ".article-sapo",
+            ".article-summary",
+        ]
+        for selector in selectors:
+            element = soup.select_one(selector)
+            if not element:
+                continue
+            text = element.get_text(" ", strip=True)
+            text = _normalize_whitespace(text)
+            if text:
+                return text
+        return None
+
+    def _extract_content_html(self, container: Tag | None) -> str | None:
+        if container is None:
+            return None
+        soup_fragment = BeautifulSoup(str(container), "lxml")
+        root = soup_fragment.find()
+        if root is None:
+            return None
+
+        for selector in ["script", "style", "noscript", "iframe", "form"]:
+            for element in root.select(selector):
+                element.decompose()
+
+        for selector in [".rennab", ".adsbygoogle", ".adv-box", "[data-position*='SdaArticle']"]:
+            for element in root.select(selector):
+                element.decompose()
+
+        for img in root.find_all("img"):
+            data_src = img.get("data-src") or img.get("data-original")
+            if data_src and not img.get("src"):
+                img["src"] = data_src
+
+        cleaned_html = root.decode_contents().strip()
+        return cleaned_html or None
+
+    def _extract_content(self, soup: BeautifulSoup, container: Tag | None = None) -> str | None:
+        if container is None:
+            container = self._find_main_container(soup)
         if container is None:
             paragraphs = [
                 p
@@ -128,6 +194,19 @@ class ArticleExtractor:
         return "\n\n".join(collected_texts)
 
     def _find_main_container(self, soup: BeautifulSoup):
+        domain = urlparse(self.base_url).netloc.lower()
+        if "baobinhduong.vn" in domain:
+            specific_container = soup.select_one("div.content#contentNews, #contentNews.content")
+            if specific_container and not _is_in_excluded_section(specific_container):
+                return specific_container
+
+        if "baolaocai.vn" in domain:
+            specific_container = soup.select_one("div.article__body.zce-content-body.cms-body")
+            if not specific_container:
+                specific_container = soup.select_one(".article__body.zce-content-body.cms-body")
+            if specific_container and not _is_in_excluded_section(specific_container):
+                return specific_container
+
         selectors = [
             "[itemprop='articleBody']",
             "article",
@@ -153,16 +232,113 @@ class ArticleExtractor:
     def _extract_category(self, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
         category_meta = soup.select_one("meta[property='article:section'], meta[name='article:section']")
         category_name = category_meta["content"].strip() if category_meta and category_meta.get("content") else None
-        category_id = category_name.lower().replace(" ", "_") if category_name else None
+
+        domain = urlparse(self.base_url).netloc.lower()
+        is_apife_baobinhduong = "baobinhduong.vn" in domain
+        is_baocamau = "baocamau.vn" in domain
+        is_baodongkhoi = "baodongkhoi.vn" in domain
+        is_baolongan = "baolongan.vn" in domain
+
+        explicit_category_id: str | None = None
+
+        if is_apife_baobinhduong:
+            apife_category_id, apife_category_name = _extract_apife_baobinhduong_category(soup)
+            if apife_category_id:
+                explicit_category_id = apife_category_id
+            if apife_category_name:
+                category_name = apife_category_name
+
+        if is_baocamau:
+            baocamau_category_id, baocamau_category_name = _extract_baocamau_category(soup)
+            if baocamau_category_id:
+                explicit_category_id = baocamau_category_id
+            if baocamau_category_name:
+                category_name = baocamau_category_name
+
+        if is_baolongan:
+            baolongan_category_id, baolongan_category_name = _extract_baolongan_category(soup)
+            if baolongan_category_id:
+                explicit_category_id = baolongan_category_id
+            if baolongan_category_name:
+                category_name = baolongan_category_name
+
+        if is_baodongkhoi:
+            hidden_category = soup.select_one("input#txtnewscate")
+            if hidden_category and hidden_category.get("value"):
+                explicit_category_id = hidden_category["value"].strip().lower() or None
+
+        if not category_name:
+            baodongkhoi_link = soup.select_one("h2.catename-h1 a")
+            if baodongkhoi_link:
+                link_text = _normalize_whitespace(baodongkhoi_link.get_text(" ", strip=True))
+                if link_text:
+                    category_name = link_text
+                elif baodongkhoi_link.get("title"):
+                    category_name = _normalize_whitespace(baodongkhoi_link["title"])
+                if is_baodongkhoi and not explicit_category_id:
+                    explicit_category_id = _slug_from_url(baodongkhoi_link.get("href"))
+
+        if not category_name:
+            titlecate = soup.select_one("div.titlecate h1")
+            if titlecate:
+                link_texts = [
+                    _normalize_whitespace(link.get_text(" ", strip=True))
+                    for link in titlecate.find_all("a")
+                    if _normalize_whitespace(link.get_text(" ", strip=True))
+                ]
+                if link_texts:
+                    category_name = " > ".join(link_texts)
+                else:
+                    text_value = _normalize_whitespace(titlecate.get_text(" ", strip=True))
+                    if text_value:
+                        category_name = text_value.replace(">", " > ")
+
+        if not category_name and explicit_category_id:
+            category_name = _prettify_slug(explicit_category_id)
+
+        category_id = explicit_category_id or (_slugify(category_name) if category_name else None)
         return category_id, category_name
+
+    def _extract_author(self, soup: BeautifulSoup) -> str | None:
+        selectors = [
+            ".article__author",
+            ".article-author",
+            "[itemprop='author']",
+            ".author-name",
+            "meta[name='author']",
+            "meta[property='article:author']",
+        ]
+        for selector in selectors:
+            element = soup.select_one(selector)
+            if not element:
+                continue
+            if element.name == "meta":
+                content = element.get("content")
+                if content and content.strip():
+                    return _normalize_whitespace(content)
+            else:
+                text = element.get_text(" ", strip=True)
+                text = _normalize_whitespace(text)
+                if text:
+                    return text
+        return None
 
     def _extract_tags(self, soup: BeautifulSoup) -> str | None:
         tags: List[str] = []
         for meta_tag in soup.select("meta[property='article:tag']"):
             if meta_tag.get("content"):
-                tags.append(meta_tag["content"].strip())
+                content = meta_tag["content"].strip()
+                if not content:
+                    continue
+                if "," in content:
+                    for part in content.split(","):
+                        part = part.strip()
+                        if part:
+                            tags.append(part)
+                else:
+                    tags.append(content)
 
-        keywords_meta = soup.select_one("meta[name='keywords']")
+        keywords_meta = soup.find("meta", attrs={"name": re.compile(r"^keywords$", re.IGNORECASE)})
         if keywords_meta and keywords_meta.get("content"):
             keywords = [kw.strip() for kw in keywords_meta["content"].split(",") if kw.strip()]
             tags.extend(keywords)
@@ -174,6 +350,8 @@ class ArticleExtractor:
             ".article-tags a",
             "ul[class*='tag'] a",
             "li[class*='tag'] a",
+            "div.block_tag a",
+            "a.tag_item",
             "[class*='keyword'] a",
             ".c-widget-tags a",
             ".onecms__tags a",
@@ -244,8 +422,28 @@ class ArticleExtractor:
                     return parsed
         return None
 
+    def _extract_last_modified(self, soup: BeautifulSoup) -> datetime | None:
+        selectors = [
+            ("meta[property='article:modified_time']", "content"),
+            ("meta[name='lastmod']", "content"),
+            ("meta[name='last-modified']", "content"),
+            ("time[itemprop='dateModified']", "datetime"),
+            ("time[datetime][itemprop='dateModified']", "datetime"),
+        ]
+        for selector, attr in selectors:
+            element = soup.select_one(selector)
+            if element and element.get(attr):
+                parsed = _parse_datetime(element[attr])
+                if parsed:
+                    return parsed
+        return None
+
     def _extract_media_urls(
-        self, soup: BeautifulSoup, selectors: Sequence[str], attr: str
+        self,
+        soup: BeautifulSoup,
+        selectors: Sequence[str],
+        attr: str,
+        skip_predicate: Optional[Callable[[str], bool]] = None,
     ) -> List[str]:
         urls: List[str] = []
         for selector in selectors:
@@ -253,22 +451,60 @@ class ArticleExtractor:
                 if not element.get(attr):
                     continue
                 media_url = element[attr].strip()
-                if media_url:
-                    urls.append(self._absolutize(media_url))
+                if not media_url:
+                    continue
+                resolved_url = self._absolutize(media_url)
+                if skip_predicate and skip_predicate(resolved_url):
+                    continue
+                urls.append(resolved_url)
         return urls
 
-    def _extract_inline_images(self, soup: BeautifulSoup) -> List[str]:
+    def _extract_inline_images(self, soup: BeautifulSoup, container: Tag | None = None) -> List[str]:
         urls: List[str] = []
-        for img in soup.select("article img, div[class*='article'] img, div[class*='content'] img"):
-            src = img.get("src") or img.get("data-src")
-            if not src:
+        search_space = container if container is not None else soup
+
+        image_tags: Sequence[Tag]
+        if container is not None:
+            image_tags = container.find_all("img")
+        else:
+            image_tags = soup.select("article img, div[class*='article'] img, div[class*='content'] img")
+
+        for img in image_tags:
+            if _is_logo_element(img):
                 continue
-            urls.append(self._absolutize(src))
+            for candidate in _collect_image_candidates(img):
+                resolved = self._absolutize(candidate)
+                if _should_skip_image_url(resolved):
+                    continue
+                urls.append(resolved)
+
+        source_tags: Sequence[Tag]
+        if container is not None:
+            source_tags = container.find_all("source")
+        else:
+            source_tags = soup.select("picture source, source[type*='image']")
+
+        for source_tag in source_tags:
+            if _is_logo_element(source_tag):
+                continue
+            for candidate in _collect_image_candidates(source_tag):
+                resolved = self._absolutize(candidate)
+                if _should_skip_image_url(resolved):
+                    continue
+                urls.append(resolved)
+
+        for element in search_space.select("[style*='background']"):
+            for candidate in _extract_urls_from_style(element.get("style", "")):
+                resolved = self._absolutize(candidate)
+                if _should_skip_image_url(resolved):
+                    continue
+                urls.append(resolved)
         return urls
 
-    def _extract_inline_videos(self, soup: BeautifulSoup) -> List[str]:
+    def _extract_inline_videos(self, soup: BeautifulSoup, container: Tag | None = None) -> List[str]:
         urls: List[str] = []
-        for video in soup.find_all("video"):
+        search_space = container if container is not None else soup
+        for video in search_space.find_all("video"):
             if video.get("src"):
                 urls.append(self._absolutize(video["src"]))
             for source in video.find_all("source"):
@@ -304,7 +540,16 @@ class ArticleCrawler:
         if user_agent:
             self.http.headers["User-Agent"] = user_agent
 
-    def crawl(self, url: str) -> bool:
+    def crawl(self, entry: SitemapEntry | str) -> bool:
+        if isinstance(entry, SitemapEntry):
+            url = entry.url
+            sitemap_lastmod = entry.lastmod
+            sitemap_article_id = entry.article_id
+        else:
+            url = entry
+            sitemap_lastmod = None
+            sitemap_article_id = None
+
         try:
             if self.throttler:
                 self.throttler.wait()
@@ -316,13 +561,23 @@ class ArticleCrawler:
 
         extractor = ArticleExtractor(url)
         article_data = extractor.extract(response.text)
+        article_data.external_id = article_data.external_id or sitemap_article_id
         if not article_data.title or not article_data.content:
             logger.info("Skipping %s due to missing title/content", url)
             return False
 
-        return self._persist(article_data)
+        return self._persist(
+            article_data,
+            sitemap_lastmod=sitemap_lastmod,
+            sitemap_article_id=sitemap_article_id,
+        )
 
-    def _persist(self, data: ArticleData) -> bool:
+    def _persist(
+        self,
+        data: ArticleData,
+        sitemap_lastmod: str | None = None,
+        sitemap_article_id: str | None = None,
+    ) -> bool:
         session = self.session_factory()
         try:
             existing = session.query(Article).filter(Article.url == data.url).one_or_none()
@@ -330,9 +585,10 @@ class ArticleCrawler:
                 logger.debug("Article already stored: %s", data.url)
                 return False
 
+            description_value = data.summary or data.description
             article = Article(
                 title=data.title[:1024],
-                description=data.description,
+                description=description_value,
                 content=data.content,
                 category_id=data.category_id,
                 category_name=data.category_name,
@@ -351,6 +607,27 @@ class ArticleCrawler:
                     )
                 )
 
+            metadata: dict[str, str] = {}
+            if data.summary:
+                metadata["summary"] = data.summary
+            if data.description and data.description != description_value:
+                metadata["meta_description"] = data.description
+            if data.content_html:
+                metadata["body_html"] = data.content_html
+            if data.author:
+                metadata["author"] = data.author
+            if data.last_modified:
+                metadata["last_modified"] = data.last_modified.isoformat()
+            sitemap_dt = parse_w3c_datetime(sitemap_lastmod) if sitemap_lastmod else None
+            if sitemap_dt:
+                metadata["sitemap_lastmod"] = sitemap_dt.isoformat()
+            elif sitemap_lastmod:
+                metadata["sitemap_lastmod_raw"] = sitemap_lastmod
+            external_id = data.external_id or sitemap_article_id
+            if external_id:
+                metadata["article_external_id"] = external_id
+            # if metadata:
+                # article.comments = metadata
             for idx, video_url in enumerate(data.videos[: self.max_videos], start=1):
                 article.videos.append(
                     ArticleVideo(
@@ -543,3 +820,292 @@ def _parse_datetime_text(text: str) -> Optional[datetime]:
     if parsed.tzinfo:
         return parsed.astimezone(timezone.utc)
     return parsed
+
+
+def _slugify(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = unicodedata.normalize("NFKD", value)
+    stripped = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    tokens = re.findall(r"[a-z0-9]+", stripped.lower())
+    if not tokens:
+        return None
+    return "_".join(tokens)
+
+
+_STYLE_URL_RE = re.compile(r"url\((['\"]?)(.+?)\1\)")
+_IMAGE_PLACEHOLDER_KEYWORDS = {
+    "logo",
+    "placeholder",
+    "default",
+    "banner",
+    "ads",
+    "adserver",
+    "icon",
+    "sprite",
+    "nophoto",
+    "no-photo",
+    "blank",
+    "spacer",
+    "tracking",
+    "pixel",
+}
+
+
+def _collect_image_candidates(tag: Tag) -> List[str]:
+    candidates: List[str] = []
+    attr_names = [
+        "src",
+        "data-src",
+        "data-original",
+        "data-lazy-src",
+        "data-medium-file",
+        "data-large-file",
+        "data-image",
+        "data-fullsrc",
+        "data-zoom-image",
+        "data-highres",
+    ]
+    for attr_name in attr_names:
+        value = tag.get(attr_name)
+        if value:
+            candidates.append(value)
+
+    for attr_name in ("srcset", "data-srcset"):
+        value = tag.get(attr_name)
+        if value:
+            candidates.extend(_parse_srcset(value))
+
+    if tag.get("style"):
+        candidates.extend(_extract_urls_from_style(tag["style"]))
+
+    seen: set[str] = set()
+    unique_candidates: List[str] = []
+    for candidate in candidates:
+        cleaned = candidate.strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        unique_candidates.append(cleaned)
+    return unique_candidates
+
+
+def _parse_srcset(value: str) -> List[str]:
+    results: List[str] = []
+    for part in value.split(","):
+        stripped = part.strip()
+        if not stripped:
+            continue
+        url_only = stripped.split(" ")[0]
+        if url_only:
+            results.append(url_only.strip())
+    return results
+
+
+def _extract_urls_from_style(style: str) -> List[str]:
+    if not style:
+        return []
+    matches = _STYLE_URL_RE.findall(style)
+    return [match[1].strip() for match in matches if match[1].strip()]
+
+
+def _should_skip_image_url(url: str) -> bool:
+    if not url:
+        return True
+    lowered = url.lower()
+    if lowered.startswith("data:"):
+        return True
+    if "insert_random_number_here" in lowered:
+        return True
+    if "www/delivery" in lowered:
+        return True
+
+    parsed = urlparse(url)
+    filename = posixpath.basename(parsed.path).lower()
+    if filename and any(keyword in filename for keyword in _IMAGE_PLACEHOLDER_KEYWORDS):
+        return True
+    if not filename and not parsed.netloc:
+        return True
+    return False
+
+
+def _is_logo_element(tag: Tag) -> bool:
+    attributes_to_check = ["class", "id", "alt", "title", "data-type"]
+    for attr in attributes_to_check:
+        value = tag.get(attr)
+        if not value:
+            continue
+        if isinstance(value, list):
+            tokens = [str(v).lower() for v in value]
+        else:
+            tokens = [str(value).lower()]
+        if any("logo" in token for token in tokens):
+            return True
+
+    current = tag.parent
+    for _ in range(2):
+        if not isinstance(current, Tag):
+            break
+        parent_classes = current.get("class") or []
+        if any("logo" in str(cls).lower() for cls in parent_classes):
+            return True
+        current = current.parent
+    return False
+
+
+def _extract_apife_baobinhduong_category(soup: BeautifulSoup) -> Tuple[str | None, str | None]:
+    breadcrumb_items = soup.select(".breadcrumb .breadcrumb-item, .breadcrumb-item")
+    if not breadcrumb_items:
+        return None, None
+
+    active_item = next(
+        (item for item in breadcrumb_items if "active" in (item.get("class") or [])),
+        breadcrumb_items[-1],
+    )
+
+    link = active_item.find("a")
+    raw_name = link.get_text(" ", strip=True) if link else active_item.get_text(" ", strip=True)
+    normalized_name = _normalize_whitespace(raw_name)
+    cleaned_name = re.sub(r"^[>\s:\-|]+", "", normalized_name)
+    category_name = cleaned_name or None
+
+    href_value = link.get("href") if link else None
+    category_slug: str | None = None
+    if href_value:
+        category_slug = _slug_from_url(href_value)
+    if not category_slug and category_name:
+        category_slug = _slugify(category_name)
+
+    return category_slug, category_name
+
+
+def _extract_baolongan_category(soup: BeautifulSoup) -> Tuple[str | None, str | None]:
+    def _clean_value(value: str | None) -> str | None:
+        if not value:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    def _get_hidden_value(selector: str) -> str | None:
+        element = soup.select_one(selector)
+        if not element:
+            return None
+        value = _clean_value(element.get("value"))
+        if not value:
+            return None
+        return value.lower()
+
+    main_slug = _get_hidden_value("input#txtnewscate")
+    sub_slug = _get_hidden_value("input#txtnewssubcate")
+
+    slug_to_use: str | None = None
+    if sub_slug and sub_slug != "all":
+        slug_to_use = sub_slug
+    elif main_slug:
+        slug_to_use = main_slug
+
+    category_name: str | None = None
+    title_link = soup.select_one("div.titlecate h2 a")
+    if title_link:
+        text = _normalize_whitespace(title_link.get_text(" ", strip=True))
+        if text:
+            category_name = text
+        if not slug_to_use:
+            slug_from_link = _slug_from_url(title_link.get("href"))
+            if slug_from_link:
+                slug_to_use = slug_from_link
+
+    if not category_name:
+        heading = soup.select_one("div.titlecate h2")
+        if heading:
+            text = _normalize_whitespace(heading.get_text(" ", strip=True))
+            if text:
+                category_name = text
+
+    if not category_name and slug_to_use:
+        category_name = _prettify_slug(slug_to_use)
+
+    return slug_to_use, category_name
+
+
+def _extract_baocamau_category(soup: BeautifulSoup) -> Tuple[str | None, str | None]:
+    def _clean_slug(value) -> str | None:
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        return None
+
+    def _find_name_for_slug(slug: str | None) -> str | None:
+        if not slug:
+            return None
+        normalized_slug = slug.strip("/").lower()
+        candidate_selectors = [
+            f".category-title-box a[href*='/{normalized_slug}/']",
+            f"a[href*='/{normalized_slug}/']",
+        ]
+        for selector in candidate_selectors:
+            for link in soup.select(selector):
+                href = (link.get("href") or "").lower()
+                if f"/{normalized_slug}/" not in href:
+                    continue
+                text = _normalize_whitespace(link.get_text(" ", strip=True))
+                if text:
+                    return text
+        return None
+
+    main_slug: str | None = None
+    sub_slug: str | None = None
+    input_element = soup.select_one("input[name='dataPostComment']")
+    if input_element and input_element.get("value"):
+        raw_value = input_element["value"]
+        try:
+            payload = json.loads(raw_value)
+        except (json.JSONDecodeError, TypeError):
+            payload = None
+        if isinstance(payload, dict):
+            main_slug = _clean_slug(payload.get("newsCate"))
+            sub_slug = _clean_slug(payload.get("newsSubcate"))
+
+    slug_to_use = sub_slug or main_slug
+    main_name = _find_name_for_slug(main_slug)
+    sub_name = _find_name_for_slug(sub_slug)
+
+    if sub_slug and sub_name:
+        category_name = f"{main_name} > {sub_name}" if main_name and main_name != sub_name else sub_name
+    else:
+        category_name = sub_name or main_name
+
+    if not category_name:
+        header_link = soup.select_one(".category-title-box .news-block-header span a")
+        if header_link:
+            text = _normalize_whitespace(header_link.get_text(" ", strip=True))
+            if text:
+                category_name = text
+            if not slug_to_use:
+                slug_to_use = _slug_from_url(header_link.get("href"))
+
+    if slug_to_use:
+        slug_to_use = slug_to_use.strip("/ ").lower()
+
+    return slug_to_use, category_name
+
+
+def _slug_from_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    parsed = urlparse(url)
+    path = parsed.path or ""
+    parts = [segment for segment in path.split("/") if segment]
+    if not parts:
+        return None
+    slug = parts[-1]
+    if slug.endswith(".html"):
+        slug = slug[:-5]
+    return slug.lower() if slug else None
+
+
+def _prettify_slug(slug: str) -> str:
+    tokens = [token for token in re.split(r"[-_]+", slug) if token]
+    if not tokens:
+        return slug
+    return " ".join(tokens).upper()

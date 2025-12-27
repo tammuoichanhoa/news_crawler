@@ -1,2 +1,6 @@
-https://baohaiphong.vn/sitemap.xml
-https://baodanang.vn/sitemap.xml
+https://baocantho.com.vn/sitemapnews.xml
+https://bbk.baothainguyen.vn/sitemap.xml
+https://baodongkhoi.vn/sitemap.xml
+https://baocamau.vn/sitemap.xml
+https://baolongan.vn/sitemap.xml
+https://apife.baobinhduong.vn/sitemap.xml

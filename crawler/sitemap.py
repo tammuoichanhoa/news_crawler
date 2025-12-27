@@ -4,6 +4,7 @@ import logging
 import random
 import time
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from fnmatch import fnmatch
 from typing import Iterable, List, Sequence, Set
 from urllib.parse import urlparse
@@ -11,9 +12,21 @@ from urllib.parse import urlparse
 import requests
 
 from .throttle import RequestThrottler
+from .utils import extract_article_id
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SitemapEntry:
+    url: str
+    lastmod: str | None = None
+    article_id: str | None = None
+
+    @property
+    def dedupe_key(self) -> str:
+        return self.article_id or self.url
 
 
 class SitemapCrawler:
@@ -25,8 +38,11 @@ class SitemapCrawler:
         timeout: int = 20,
         allowed_extensions: Iterable[str] | None = None,
         include_patterns: Sequence[str] | None = None,
+        exclude_patterns: Sequence[str] | None = None,
         user_agent: str | None = None,
         throttler: RequestThrottler | None = None,
+        url_include_patterns: Sequence[str] | None = None,
+        url_exclude_patterns: Sequence[str] | None = None,
     ) -> None:
         self.session = session or requests.Session()
         self.timeout = timeout
@@ -36,13 +52,16 @@ class SitemapCrawler:
             else None
         )
         self.include_patterns = list(include_patterns) if include_patterns else None
+        self.exclude_patterns = list(exclude_patterns) if exclude_patterns else None
+        self.url_patterns = list(url_include_patterns) if url_include_patterns else None
+        self.url_exclude_patterns = list(url_exclude_patterns) if url_exclude_patterns else None
         self.throttler = throttler
 
         if user_agent:
             self.session.headers["User-Agent"] = user_agent
 
-    def fetch_urls(self, sitemap_url: str) -> List[str]:
-        """Fetch sitemap (or sitemap index) and return article URLs."""
+    def fetch_urls(self, sitemap_url: str) -> List[SitemapEntry]:
+        """Fetch sitemap (or sitemap index) and return structured article entries."""
         try:
             response = self._request_with_retry(sitemap_url)
         except Exception as exc:
@@ -50,7 +69,7 @@ class SitemapCrawler:
             return []
 
         raw_content = self._maybe_decompress(response, sitemap_url)
-        urls: List[str] = []
+        entries: List[SitemapEntry] = []
 
         try:
             root = ET.fromstring(raw_content)
@@ -67,16 +86,25 @@ class SitemapCrawler:
                 if loc is not None and loc.text:
                     loc_text = loc.text.strip()
                     if self._allowed_child_sitemap(loc_text):
-                        urls.extend(self.fetch_urls(loc_text))
+                        entries.extend(self.fetch_urls(loc_text))
         else:
             for url in root.findall(f"{namespace}url" if namespace else "url"):
                 loc = url.find(f"{namespace}loc" if namespace else "loc")
                 if loc is None or not loc.text:
                     continue
                 loc_text = loc.text.strip()
-                if self._allowed_url(loc_text):
-                    urls.append(loc_text)
-        return urls
+                if not self._allowed_url(loc_text):
+                    continue
+                lastmod_element = url.find(f"{namespace}lastmod" if namespace else "lastmod")
+                lastmod_text = lastmod_element.text.strip() if lastmod_element is not None and lastmod_element.text else None
+                entries.append(
+                    SitemapEntry(
+                        url=loc_text,
+                        lastmod=lastmod_text,
+                        article_id=extract_article_id(loc_text),
+                    )
+                )
+        return entries
 
     def _maybe_decompress(
         self, response: requests.Response, source_url: str
@@ -105,12 +133,24 @@ class SitemapCrawler:
 
     def _allowed_url(self, url: str) -> bool:
         if not self.allowed_extensions:
-            return True
+            allowed = True
+        else:
+            path = urlparse(url).path.lower()
+            allowed = any(path.endswith(ext) for ext in self.allowed_extensions)
 
-        path = urlparse(url).path.lower()
-        return any(path.endswith(ext) for ext in self.allowed_extensions)
+        if not allowed:
+            return False
+
+        if self.url_exclude_patterns and any(fnmatch(url, pattern) for pattern in self.url_exclude_patterns):
+            return False
+
+        if not self.url_patterns:
+            return True
+        return any(fnmatch(url, pattern) for pattern in self.url_patterns)
 
     def _allowed_child_sitemap(self, url: str) -> bool:
+        if self.exclude_patterns and any(fnmatch(url, pattern) for pattern in self.exclude_patterns):
+            return False
         if not self.include_patterns:
             return True
         return any(fnmatch(url, pattern) for pattern in self.include_patterns)
