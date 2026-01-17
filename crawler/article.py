@@ -1967,6 +1967,40 @@ def _extract_vietnamnet_category(base_url: str, soup: BeautifulSoup) -> Tuple[st
     return category_id, category_name
 
 
+def _extract_dantri_category(base_url: str, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
+    selectors = [
+        "a[data-content-name='article-breadcrumb'][href]",
+        "a[data-content-name='article-breadcrumb'][data-content-target]",
+    ]
+    category_links: List[Tag] = []
+    for selector in selectors:
+        category_links = soup.select(selector)
+        if category_links:
+            break
+
+    if not category_links:
+        return None, None
+
+    category_names: List[str] = []
+    category_id: str | None = None
+
+    for link in category_links:
+        text_value = _normalize_whitespace(link.get_text(" ", strip=True))
+        if not text_value and link.get("title"):
+            text_value = _normalize_whitespace(str(link["title"]))
+        if text_value:
+            category_names.append(text_value)
+
+        href = link.get("data-content-target") or link.get("href")
+        if href:
+            slug = _slug_from_url(urljoin(base_url, href))
+            if slug:
+                category_id = slug
+
+    category_name = " > ".join(category_names) if category_names else None
+    return category_id, category_name
+
+
 _CATEGORY_EXTRACTORS: dict[str, Callable[[str, BeautifulSoup], Tuple[str | None, str | None]]] = {
     "genk_category": _extract_genk_category,
     "kenh14_category": _extract_kenh14_category,
@@ -1982,6 +2016,7 @@ _CATEGORY_EXTRACTORS: dict[str, Callable[[str, BeautifulSoup], Tuple[str | None,
     "soha_category": _extract_soha_category,
     "vtv_category": _extract_vtv_category,
     "vietnamnet_category": _extract_vietnamnet_category,
+    "dantri_category": _extract_dantri_category,
 }
 
 _TAG_EXTRACTORS: dict[str, Callable[[BeautifulSoup], List[str]]] = {

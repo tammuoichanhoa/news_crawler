@@ -263,6 +263,10 @@ ARTICLE_SITE_CONFIG: Dict[str, ArticleSiteConfig] = {
     "nongnghiepmoitruong.vn": ArticleSiteConfig(
         description_selectors=("h2.main-intro.detail-intro",),
     ),
+    "dantri.com.vn": ArticleSiteConfig(
+        category_extractors=("dantri_category",),
+        inline_media_only=True,
+    ),
 }
 
 
