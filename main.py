@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 from urllib.parse import urlparse
 
+from crawler.article import ArticleCrawler
 from crawler.pipeline import CrawlPipeline
 from crawler.throttle import RequestThrottler
 from db.session import create_session_factory
@@ -38,6 +39,10 @@ VNECONOMY_SITEMAP_EXCLUDE_PATTERNS = [
     "*vneconomy.vn/sitemap/categories.xml",
     "*vneconomy.vn/sitemap/latest-news.xml",
     "*vneconomy.vn/sitemap/google-news.xml",
+]
+DANTRI_SITEMAP_EXCLUDE_PATTERNS = [
+    "*dantri.com.vn/sitemaps/categories.xml",
+    "*dantri.com.vn/sitemaps/topics.xml",
 ]
 
 BAODAUTU_SITEMAP_EXCLUDE_PATTERNS = [
@@ -127,6 +132,7 @@ DEFAULT_SITEMAP_EXCLUDE_PATTERNS = (
     + CAFEBIZ_SITEMAP_EXCLUDE_PATTERNS
     + GIADINH_SUCKHOEDOISONG_SITEMAP_EXCLUDE_PATTERNS
     + VNECONOMY_SITEMAP_EXCLUDE_PATTERNS
+    + DANTRI_SITEMAP_EXCLUDE_PATTERNS
     + BAODAUTU_SITEMAP_EXCLUDE_PATTERNS
     + NHANDAN_SITEMAP_EXCLUDE_PATTERNS
     + ANNINHTHUDO_SITEMAP_EXCLUDE_PATTERNS
@@ -156,6 +162,21 @@ def read_sitemap_list(file_path: Path) -> list[str]:
         raise FileNotFoundError(f"Sitemaps file not found: {file_path}")
     with file_path.open("r", encoding="utf-8") as handle:
         return [line.strip() for line in handle if line.strip() and not line.startswith("#")]
+
+
+def read_url_list(file_path: Path) -> list[str]:
+    if not file_path.exists():
+        raise FileNotFoundError(f"URL file not found: {file_path}")
+    with file_path.open("r", encoding="utf-8") as handle:
+        seen: set[str] = set()
+        urls: list[str] = []
+        for line in handle:
+            url = line.strip()
+            if not url or url.startswith("#") or url in seen:
+                continue
+            seen.add(url)
+            urls.append(url)
+    return urls
 
 
 def build_default_sitemap_include_patterns(sitemap_urls: list[str] | None) -> list[str]:
@@ -191,6 +212,16 @@ def parse_args() -> argparse.Namespace:
         help="Database URL. If omitted, DATABASE_URL environment variable is used.",
     )
     parser.add_argument(
+        "--urls-file",
+        default="resume_url.txt",
+        help="Path to a text file containing article URLs to crawl directly.",
+    )
+    parser.add_argument(
+        "--use-url-file",
+        action="store_true",
+        help="Skip sitemap processing and crawl article URLs listed in --urls-file.",
+    )
+    parser.add_argument(
         "--allowed-extension",
         action="append",
         help="Restrict collected URLs to the given file extensions (e.g. --allowed-extension .html).",
@@ -210,6 +241,15 @@ def parse_args() -> argparse.Namespace:
         "--direct-crawl",
         action="store_true",
         help="Fetch sitemap URLs and crawl articles immediately without caching URLs to disk.",
+    )
+    parser.add_argument(
+        "--store-urls",
+        action="store_true",
+        help="Persist collected URLs to disk when using --direct-crawl (helps resume later).",
+    )
+    parser.add_argument(
+        "--url-export",
+        help="Optional path to write a deduplicated list of all cached URLs (txt file).",
     )
     parser.add_argument(
         "--max-urls-per-site",
@@ -253,6 +293,12 @@ def parse_args() -> argparse.Namespace:
         action="append",
         help="Skip URLs whose value matches these glob patterns (e.g. --url-exclude '*category*').",
     )
+    parser.add_argument(
+        "--sitemap-year",
+        type=int,
+        default=None,
+        help="Only keep sitemap entries whose lastmod/URL indicates this year; entries with unknown year are skipped (e.g. 2026).",
+    )
 
     return parser.parse_args()
 
@@ -273,6 +319,39 @@ def main() -> None:
         )
 
     session_factory = create_session_factory(database_url=args.database_url)
+
+    # If requested, bypass sitemap pipeline and crawl articles directly from a URL file.
+    if args.use_url_file:
+        urls_path = Path(args.urls_file)
+        urls = read_url_list(urls_path)
+        if not urls:
+            logging.info("No URLs found in %s; nothing to crawl.", urls_path)
+            return
+
+        throttler: RequestThrottler | None = None
+        if args.min_request_delay > 0 or (args.max_request_delay is not None and args.max_request_delay > 0):
+            throttler = RequestThrottler(
+                min_delay=args.min_request_delay,
+                max_delay=args.max_request_delay,
+            )
+
+        crawler = ArticleCrawler(
+            session_factory=session_factory,
+            user_agent=args.user_agent,
+            throttler=throttler,
+        )
+
+        processed_total = 0
+        max_total = args.max_total_urls
+        for url in urls:
+            if max_total is not None and processed_total >= max_total:
+                logging.info("Reached global crawl limit (%s). Stopping.", max_total)
+                break
+            stored = crawler.crawl(url)
+            if stored:
+                processed_total += 1
+        logging.info("Finished crawling URL file %s; stored %s new articles.", urls_path, processed_total)
+        return
     sitemap_urls: list[str] | None = None
     need_sitemaps = args.direct_crawl or not args.skip_url_collection
     if need_sitemaps:
@@ -291,6 +370,9 @@ def main() -> None:
             if pattern not in sitemap_include_patterns:
                 sitemap_include_patterns.append(pattern)
 
+    url_export_path = Path(args.url_export) if args.url_export else None
+    should_store_direct_urls = args.store_urls or url_export_path is not None
+
     pipeline = CrawlPipeline(
         stored_urls_dir=Path(args.stored_urls_dir),
         session_factory=session_factory,
@@ -301,6 +383,7 @@ def main() -> None:
         sitemap_exclude_patterns=sitemap_exclude_patterns or None,
         url_include_patterns=args.url_include,
         url_exclude_patterns=args.url_exclude,
+        sitemap_year=args.sitemap_year,
     )
 
     if args.direct_crawl:
@@ -308,11 +391,14 @@ def main() -> None:
             sitemap_urls,
             slug_filter=args.slug,
             max_urls_per_site=args.max_urls_per_site,
-            store_urls=False,
+            store_urls=should_store_direct_urls,
             max_total_urls=args.max_total_urls,
         )
         for slug, count in summary.items():
             logging.info("Direct crawl stored %s new articles for %s", count, slug)
+        if url_export_path:
+            exported = pipeline.export_all_urls(url_export_path)
+            logging.info("Exported %s URLs to %s", exported, url_export_path)
         return
 
     if not args.skip_url_collection and sitemap_urls is not None:
@@ -327,6 +413,9 @@ def main() -> None:
         )
         for slug, count in summary.items():
             logging.info("Stored %s new articles for %s", count, slug)
+    if url_export_path:
+        exported = pipeline.export_all_urls(url_export_path)
+        logging.info("Exported %s URLs to %s", exported, url_export_path)
 
 
 if __name__ == "__main__":

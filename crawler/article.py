@@ -73,17 +73,19 @@ class ArticleExtractor:
 
         restrict_media_to_body = bool(self.site_config and self.site_config.inline_media_only)
 
-        if restrict_media_to_body:
-            data.images = []
-        else:
-            data.images = self._extract_media_urls(
+        inline_images = self._extract_inline_images(soup, main_container)
+        metadata_images: list[str] = []
+        if not restrict_media_to_body:
+            metadata_images = self._extract_media_urls(
                 soup,
                 ["meta[property='og:image']", "meta[name='og:image']"],
                 "content",
                 skip_predicate=_should_skip_image_url,
             )
 
-        data.images.extend(self._extract_inline_images(soup, main_container))
+        # Prefer images that are part of the article body; only fall back to metadata
+        # images when none were found to avoid storing redundant site-wide thumbnails.
+        data.images = inline_images or metadata_images
         data.images = _deduplicate_preserve_order(data.images)
 
         data.videos = self._extract_media_urls(
@@ -279,16 +281,37 @@ class ArticleExtractor:
         return None
 
     def _prune_main_container(self, container: Tag | None) -> Tag | None:
-        if not container or not self.site_config:
-            return container
-        selectors = self.site_config.excluded_section_selectors
-        if not selectors:
-            return container
+        if not container:
+            return None
 
-        for selector in selectors:
-            for element in container.select(selector):
-                element.decompose()
+        if self.site_config:
+            selectors = self.site_config.excluded_section_selectors
+            if selectors:
+                for selector in selectors:
+                    for element in container.select(selector):
+                        element.decompose()
+
+        if self.domain.endswith("cafebiz.vn"):
+            self._truncate_container_at_first_selector(container, ".p-author")
         return container
+
+    def _truncate_container_at_first_selector(self, container: Tag, selector: str) -> None:
+        marker = container.select_one(selector)
+        if not marker:
+            return
+
+        # Remove everything that appears after the marker inside this container.
+        current: Tag | None = marker
+        while current is not None and current is not container:
+            sibling = current.next_sibling
+            while sibling is not None:
+                next_sibling = sibling.next_sibling
+                sibling.extract()
+                sibling = next_sibling
+            parent = current.parent
+            current = parent if isinstance(parent, Tag) else None
+
+        marker.decompose()
 
     def _extract_category(self, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
         category_meta = soup.select_one("meta[property='article:section'], meta[name='article:section']")
@@ -603,7 +626,7 @@ class ArticleCrawler:
         self,
         session_factory,
         timeout: int = 20,
-        max_images: int = 10,
+        max_images: int | None = None,
         max_videos: int = 5,
         user_agent: str | None = None,
         throttler: RequestThrottler | None = None,
@@ -705,7 +728,11 @@ class ArticleCrawler:
             session.add(article)
             session.flush()  # ensures article.id is generated
 
-            for idx, image_url in enumerate(data.images[: self.max_images], start=1):
+            image_urls = data.images
+            if self.max_images is not None:
+                image_urls = image_urls[: self.max_images]
+
+            for idx, image_url in enumerate(image_urls, start=1):
                 article.images.append(
                     ArticleImage(
                         image_path=image_url,  # storing original URL; adjust if downloads are required
@@ -1114,6 +1141,10 @@ def _should_skip_image_url(url: str) -> bool:
     if "insert_random_number_here" in lowered:
         return True
     if "www/delivery" in lowered:
+        return True
+    if "cafebiz.vn/web_images/" in lowered:
+        return True
+    if lowered.endswith("/nextgenceo-detail-2.png") or lowered.endswith("nextgenceo-detail-2.png"):
         return True
 
     parsed = urlparse(url)
@@ -1967,6 +1998,31 @@ def _extract_vietnamnet_category(base_url: str, soup: BeautifulSoup) -> Tuple[st
     return category_id, category_name
 
 
+def _extract_dantri_category(base_url: str, soup: BeautifulSoup) -> Tuple[str | None, str | None]:
+    breadcrumb_links = soup.select("a[data-content-name='article-breadcrumb']")
+    if not breadcrumb_links:
+        breadcrumb_links = soup.select("li.dt-font-Inter.dt-float-left a")
+
+    category_id: str | None = None
+    category_name: str | None = None
+
+    for link in breadcrumb_links:
+        text_value = _normalize_whitespace(link.get_text(" ", strip=True))
+        if not text_value and link.get("title"):
+            text_value = _normalize_whitespace(str(link["title"]))
+
+        href = link.get("data-content-target") or link.get("href")
+        if href:
+            slug = _slug_from_url(urljoin(base_url, href))
+            if slug:
+                category_id = slug
+
+        if text_value:
+            category_name = text_value
+
+    return category_id, category_name
+
+
 _CATEGORY_EXTRACTORS: dict[str, Callable[[str, BeautifulSoup], Tuple[str | None, str | None]]] = {
     "genk_category": _extract_genk_category,
     "kenh14_category": _extract_kenh14_category,
@@ -1982,6 +2038,7 @@ _CATEGORY_EXTRACTORS: dict[str, Callable[[str, BeautifulSoup], Tuple[str | None,
     "soha_category": _extract_soha_category,
     "vtv_category": _extract_vtv_category,
     "vietnamnet_category": _extract_vietnamnet_category,
+    "dantri_category": _extract_dantri_category,
 }
 
 _TAG_EXTRACTORS: dict[str, Callable[[BeautifulSoup], List[str]]] = {

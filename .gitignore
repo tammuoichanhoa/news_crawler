@@ -2,3 +2,5 @@
 .venv/
 .env/
 stored_urls/*
+pgdata/
+*.txt

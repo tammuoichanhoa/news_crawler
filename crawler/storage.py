@@ -122,3 +122,19 @@ class UrlStore:
                 return None
         # Legacy plain URL support
         return SitemapEntry(url=stripped, article_id=extract_article_id(stripped))
+
+    def export_all(self, destination: Path) -> int:
+        """
+        Export a deduplicated list of all stored URLs across slugs to a single file.
+        Returns the number of URLs written.
+        """
+        urls: list[str] = []
+        for file_path in sorted(self.base_dir.glob("*_urls.txt")):
+            slug = file_path.stem.replace("_urls", "")
+            entries = self.read_all(slug)
+            urls.extend(entry.url for entry in entries)
+
+        unique_urls = list(dict.fromkeys(urls))  # preserve discovery order
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("\n".join(unique_urls), encoding="utf-8")
+        return len(unique_urls)

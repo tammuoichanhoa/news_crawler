@@ -13,13 +13,13 @@ This project crawls news sitemaps and persists article details to the PostgreSQL
 2. Provide a PostgreSQL database URL via the `DATABASE_URL` environment variable, or pass it through `--database-url`. Example:
 
    ```bash
-   export DATABASE_URL=postgresql://user:password@localhost:5432/crawl_db
+   export DATABASE_URL=postgresql://user:password@localhost:5436/crawl_db
    ```
 
 You can also place this value in a local `.env` file (loaded automatically via `python-dotenv`):
 
 ```bash
-echo "DATABASE_URL=postgresql://user:password@localhost:5432/crawl_db" > .env
+echo "DATABASE_URL=postgresql://user:password@localhost:5436/crawl_db" > .env
 ```
 
 ## Usage
@@ -64,6 +64,16 @@ python main.py --direct-crawl --sitemaps-file sitemaps.txt --max-urls-per-site 1
 Optional filters like `--slug` and `--sitemap-include` still apply in direct mode.
 Combine with `--max-total-urls` to cap overall work, e.g. `--max-total-urls 20`.
 
+### Crawl from a URL File (e.g. Tuổi Trẻ)
+
+You can bypass sitemap collection entirely and crawl articles directly from a text file of URLs using `--use-url-file`:
+
+```bash
+python main.py --use-url-file --urls-file tuoitre_urls.txt --max-total-urls 100
+```
+
+This will read unique, non-comment lines from `tuoitre_urls.txt` and crawl each article once, respecting `--max-total-urls` and the usual throttling options.
+
 ## Verify Crawled Data
 
 Use the inspection helper to review what has been stored:
@@ -85,7 +95,7 @@ python quality_check.py --host baohaiphong.vn --content-threshold 400
 Keep the database schema in sync with the SQLAlchemy models. To widen the `articles.tags` column to 5000 characters run:
 
 ```bash
-python -m db.migrations.expand_tags_length --database-url postgresql://user:password@localhost:5432/crawl_db
+python -m db.migrations.expand_tags_length --database-url postgresql://user:password@localhost:5436/crawl_db
 ```
 
 You can omit `--database-url` if `DATABASE_URL` is set in the environment. Pass `--downgrade` to revert the change if needed.

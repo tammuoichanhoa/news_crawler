@@ -32,10 +32,42 @@ python main.py --database-url postgresql://crawl:crawl@localhost:5432/mattran --
 
 
 
-python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baolaocai --skip-url-collection --slug baolaocai_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baolaocai --skip-url-collection --slug baolaocai_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*'
 
-python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baolaocai --skip-url-collection --slug baolaocai_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baolaocai --skip-url-collection --slug baolaocai_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*'
 
 
 
-python3 main.py --skip-url-collection --slug soha_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*
+python3 main.py --skip-url-collection --slug soha_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*'
+python3 main.py --skip-url-collection --slug dantri_com_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*' --max-total-urls 2
+
+
+
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/bnews --skip-url-collection --slug bnews_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*'
+
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/soha --skip-url-collection --slug soha_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*'
+
+
+
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/vneconomy --skip-url-collection --slug vneconomy_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*'
+
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baophapluat --skip-url-collection --slug baophapluat_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*'
+
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5432/baodongnai --skip-url-collection --slug baodongnai_com_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*'
+
+
+# Crawl Tuoi Tre articles directly from a URL file (tuoitre_urls.txt in this folder, using DATABASE_URL or --database-url):
+python3 main.py --use-url-file --urls-file tuoitre_urls.txt --database-url postgresql://crawl:crawl@localhost:5432/tuoitre
+
+
+--------------------------------
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5436/articles_1_1_to_15_4_26 --skip-article-ingest --slug soha_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*'
+python main.py --database-url postgresql://crawl:crawl@localhost:5436/articles_1_1_to_15_4_26 --slug kenh14_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*' --skip-article-ingest
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5436/articles_1_1_to_15_4_26 --skip-article-ingest --slug dantri_com_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*' --sitemap-year 2026
+
+
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5436/articles_1_1_to_15_4_26 --skip-article-ingest --slug vtv_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*' --sitemap-year 2026
+
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5436/articles_1_1_to_15_4_26 --skip-article-ingest --slug cafef_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*' --sitemap-year 2026
+
+python3 main.py --database-url postgresql://crawl:crawl@localhost:5436/articles_1_1_to_15_4_26 --skip-article-ingest --slug vietnamnet_vn --sitemap-exclude '*categories*' --sitemap-exclude '*topics*' --sitemap-year 2026

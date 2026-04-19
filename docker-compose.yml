@@ -1,0 +1,13 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: container_1_1_to_15_4_26
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crawl
+      POSTGRES_PASSWORD: crawl
+      POSTGRES_DB: articles_1_1_to_15_4_26
+    ports:
+      - "5436:5432"
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data

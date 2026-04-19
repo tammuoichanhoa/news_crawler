@@ -84,6 +84,23 @@ ARTICLE_SITE_CONFIG: Dict[str, ArticleSiteConfig] = {
         ),
         main_container_keywords=("article__body", "cms-body"),
     ),
+    "dantri.com.vn": ArticleSiteConfig(
+        title_selectors=(
+            "h1",
+            "meta[name='title']",
+            "meta[property='og:title']",
+        ),
+        description_selectors=(
+            ".singular-sapo",
+            ".singular-sapo h2",
+            "meta[name='description']",
+        ),
+        main_container_selectors=(
+            ".singular-content",
+            "div.singular-content",
+        ),
+        category_extractors=("dantri_category",),
+    ),
     "congly.vn": ArticleSiteConfig(
         main_container_selectors=(
             "div.b-maincontent",

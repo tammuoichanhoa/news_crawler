@@ -1,6 +1,8 @@
 import logging
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence
+from urllib.parse import urlparse
+import re
 
 from sqlalchemy.orm import sessionmaker
 
@@ -28,8 +30,10 @@ class CrawlPipeline:
         url_exclude_patterns: Sequence[str] | None = None,
         request_throttler: RequestThrottler | None = None,
         user_agent: str | None = None,
+        sitemap_year: int | None = None,
     ) -> None:
         self.url_store = UrlStore(stored_urls_dir)
+        self.sitemap_year = sitemap_year
         self.sitemap_crawler = SitemapCrawler(
             allowed_extensions=allowed_extensions,
             include_patterns=sitemap_include_patterns,
@@ -178,6 +182,13 @@ class CrawlPipeline:
         if not entries:
             return []
 
+        if self.sitemap_year is not None:
+            before = len(entries)
+            entries = [entry for entry in entries if self._matches_year(entry, self.sitemap_year)]
+            removed = before - len(entries)
+            if removed:
+                logger.info("Filtered %s sitemap URLs outside year=%s for slug=%s", removed, self.sitemap_year, slug)
+
         if slug in {"www_sggp_org_vn", "sggp_org_vn"}:
             entries = [entry for entry in entries if entry.article_id]
 
@@ -193,6 +204,43 @@ class CrawlPipeline:
         return list(deduped.values())
 
     @staticmethod
+    def _matches_year(entry: SitemapEntry, year: int) -> bool:
+        entry_year = CrawlPipeline._infer_entry_year(entry)
+        if entry_year is None:
+            return False
+        return entry_year == year
+
+    @staticmethod
+    def _infer_entry_year(entry: SitemapEntry) -> int | None:
+        if entry.lastmod:
+            parsed = parse_w3c_datetime(entry.lastmod)
+            if parsed:
+                return parsed.year
+            cleaned = entry.lastmod.strip()
+            if len(cleaned) >= 4 and cleaned[:4].isdigit():
+                candidate = int(cleaned[:4])
+                if 1900 <= candidate <= 2100:
+                    return candidate
+
+        try:
+            path = urlparse(entry.url).path
+        except Exception:  # pragma: no cover - defensive guard
+            path = entry.url
+
+        # Common patterns: /2026/..., /202601/..., /20260101/..., /2026-04-19/...
+        for segment in (seg for seg in path.split("/") if seg):
+            if len(segment) >= 4 and segment[:4].isdigit():
+                candidate = int(segment[:4])
+                if 1900 <= candidate <= 2100:
+                    return candidate
+
+        match = re.search(r"(?:^|[^0-9])(20\d{2})(?:[^0-9]|$)", path)
+        if match:
+            return int(match.group(1))
+
+        return None
+
+    @staticmethod
     def _is_newer(candidate: SitemapEntry, incumbent: SitemapEntry) -> bool:
         if candidate.lastmod and not incumbent.lastmod:
             return True
@@ -205,3 +253,7 @@ class CrawlPipeline:
         if candidate_dt and not incumbent_dt:
             return True
         return False
+
+    def export_all_urls(self, destination: Path) -> int:
+        """Write all cached URLs into a single text file for reuse."""
+        return self.url_store.export_all(destination)
